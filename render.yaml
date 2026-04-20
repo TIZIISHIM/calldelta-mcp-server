@@ -2,7 +2,7 @@ services:
   - type: web
     name: calldelta-mcp-server
     runtime: python
-    repo: https://github.com/TIZIISHIM/call-delta-mcp-server
+    repo: https://github.com/TIZIISHIM/calldelta-mcp-server
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python server.py
