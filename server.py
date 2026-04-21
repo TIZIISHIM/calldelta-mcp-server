@@ -8,196 +8,141 @@ import os
 from datetime import datetime
 from typing import Dict
 
-from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions
-from mcp.server.streamable_http import StreamableHTTPServerTransport
-import mcp.types as types
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
+import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
 from sentiment_analyzer import TransparentSentimentAnalyzer
 from delta_detector import TranscriptDeltaDetector
-
-# Initialize server
-server = Server("calldelta-mcp-server")
 
 # Initialize components
 fetcher = TranscriptFetcher()
 sentiment_analyzer = TransparentSentimentAnalyzer()
 delta_detector = TranscriptDeltaDetector()
 
-
-@server.list_tools()
-async def handle_list_tools() -> list[types.Tool]:
-    """List available tools."""
-    return [
-        types.Tool(
-            name="compare_earnings_calls",
-            description="Compare two earnings call transcripts (current quarter vs previous quarter) and return structured delta showing changes in management tone, guidance language, and topic-specific sentiment shifts. Every claim includes exact source sentences, FinBERT output, and confidence scores. No black-box verdicts.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "ticker": {
-                        "type": "string",
-                        "description": "Stock ticker symbol (e.g., 'NVDA', 'TSLA', 'AAPL')"
-                    },
-                    "current_year": {
-                        "type": "integer",
-                        "description": "Year of the current earnings call"
-                    },
-                    "current_quarter": {
-                        "type": "integer",
-                        "description": "Quarter number of the current earnings call (1, 2, 3, or 4)"
-                    },
-                    "previous_year": {
-                        "type": "integer",
-                        "description": "Year of the previous earnings call"
-                    },
-                    "previous_quarter": {
-                        "type": "integer",
-                        "description": "Quarter number of the previous earnings call (1, 2, 3, or 4)"
-                    }
-                },
-                "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
-            }
-        ),
-        types.Tool(
-            name="analyze_sentiment",
-            description="Analyze sentiment of an earnings call transcript or text passage. Returns transparent results with sentence-level evidence, FinBERT output, and confidence scores.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "Text passage to analyze"
-                    }
-                },
-                "required": ["text"]
-            }
-        )
-    ]
+# Create FastAPI app
+app = FastAPI(title="CallDelta MCP Server", description="Earnings Call Transcript Delta Intelligence")
 
 
-@server.call_tool()
-async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
-    """Handle tool execution."""
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "service": "CallDelta MCP Server",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/call")
+async def handle_tool_call(request: Request):
+    """
+    Handle MCP tool calls.
+    This is the main endpoint that Context Protocol will call.
+    """
+    body = await request.json()
     
-    if name == "compare_earnings_calls":
-        ticker = arguments.get("ticker", "").upper()
-        current_year = arguments.get("current_year")
-        current_quarter = arguments.get("current_quarter")
-        previous_year = arguments.get("previous_year")
-        previous_quarter = arguments.get("previous_quarter")
-        
-        if not ticker:
-            return [types.TextContent(
-                type="text",
-                text=json.dumps({"error": "Ticker is required"}, indent=2)
-            )]
-        
-        current_result = fetcher.fetch_transcript(ticker, current_year, current_quarter)
-        
-        if current_result['status'] == 'error':
-            return [types.TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": "Failed to fetch transcript",
-                    "details": current_result
-                }, indent=2)
-            )]
-        
-        previous_result = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
-        
-        if previous_result['status'] == 'error':
-            return [types.TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": "Failed to fetch previous transcript",
-                    "details": previous_result
-                }, indent=2)
-            )]
-        
-        sentiment_comparison = sentiment_analyzer.compare_transcripts(
-            current_result['content'],
-            previous_result['content']
-        )
-        
-        text_changes = delta_detector.detect_changes(
-            current_result['content'],
-            previous_result['content']
-        )
-        
-        response = {
-            'tool': 'compare_earnings_calls',
-            'ticker': ticker,
-            'current_quarter': f"Q{current_quarter} {current_year}",
-            'previous_quarter': f"Q{previous_quarter} {previous_year}",
-            'sources': {
-                'current': {
-                    'source': current_result['source'],
-                    'url': current_result.get('url'),
-                    'fetched_at': current_result.get('timestamp')
-                },
-                'previous': {
-                    'source': previous_result['source'],
-                    'url': previous_result.get('url'),
-                    'fetched_at': previous_result.get('timestamp')
-                }
-            },
-            'sentiment_analysis': sentiment_comparison,
-            'text_changes': text_changes,
-            'query_timestamp': datetime.now().isoformat()
-        }
-        
-        return [types.TextContent(
-            type="text",
-            text=json.dumps(response, indent=2)
-        )]
+    tool_name = body.get("tool")
+    arguments = body.get("arguments", {})
     
-    elif name == "analyze_sentiment":
-        text = arguments.get("text", "")
-        
-        if not text or len(text) < 50:
-            return [types.TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": "Text is required and must be at least 50 characters"
-                }, indent=2)
-            )]
-        
-        analysis = sentiment_analyzer.analyze_transcript(text)
-        
-        response = {
-            'tool': 'analyze_sentiment',
-            'analysis': analysis,
-            'query_timestamp': datetime.now().isoformat()
-        }
-        
-        return [types.TextContent(
-            type="text",
-            text=json.dumps(response, indent=2)
-        )]
+    if tool_name == "compare_earnings_calls":
+        result = await compare_earnings_calls(arguments)
+        return JSONResponse(content=result)
+    
+    elif tool_name == "analyze_sentiment":
+        result = await analyze_sentiment(arguments)
+        return JSONResponse(content=result)
     
     else:
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": f"Unknown tool: {name}"}, indent=2)
-        )]
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown tool: {tool_name}"}
+        )
 
 
-async def main():
-    """Run the MCP server with Streamable HTTP transport."""
-    # Get port from environment variable (Render sets this)
-    port = int(os.environ.get("PORT", 10000))
+async def compare_earnings_calls(arguments: Dict) -> Dict:
+    """Compare two earnings call transcripts."""
+    ticker = arguments.get("ticker", "").upper()
+    current_year = arguments.get("current_year")
+    current_quarter = arguments.get("current_quarter")
+    previous_year = arguments.get("previous_year")
+    previous_quarter = arguments.get("previous_quarter")
     
-    # Create HTTP transport
-    transport = StreamableHTTPServerTransport(server, port=port)
+    if not ticker:
+        return {"error": "Ticker is required"}
     
-    print(f"Starting CallDelta MCP Server on port {port}")
+    # Fetch current transcript
+    current_result = fetcher.fetch_transcript(ticker, current_year, current_quarter)
     
-    # Start the server
-    await transport.start()
+    if current_result['status'] == 'error':
+        return {
+            "error": "Failed to fetch current transcript",
+            "details": current_result
+        }
+    
+    # Fetch previous transcript
+    previous_result = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
+    
+    if previous_result['status'] == 'error':
+        return {
+            "error": "Failed to fetch previous transcript",
+            "details": previous_result
+        }
+    
+    # Compare transcripts
+    sentiment_comparison = sentiment_analyzer.compare_transcripts(
+        current_result['content'],
+        previous_result['content']
+    )
+    
+    text_changes = delta_detector.detect_changes(
+        current_result['content'],
+        previous_result['content']
+    )
+    
+    return {
+        'tool': 'compare_earnings_calls',
+        'ticker': ticker,
+        'current_quarter': f"Q{current_quarter} {current_year}",
+        'previous_quarter': f"Q{previous_quarter} {previous_year}",
+        'sources': {
+            'current': {
+                'source': current_result['source'],
+                'url': current_result.get('url'),
+                'fetched_at': current_result.get('timestamp')
+            },
+            'previous': {
+                'source': previous_result['source'],
+                'url': previous_result.get('url'),
+                'fetched_at': previous_result.get('timestamp')
+            }
+        },
+        'sentiment_analysis': sentiment_comparison,
+        'text_changes': text_changes,
+        'query_timestamp': datetime.now().isoformat()
+    }
+
+
+async def analyze_sentiment(arguments: Dict) -> Dict:
+    """Analyze sentiment of a transcript."""
+    text = arguments.get("text", "")
+    
+    if not text or len(text) < 50:
+        return {"error": "Text is required and must be at least 50 characters"}
+    
+    analysis = sentiment_analyzer.analyze_transcript(text)
+    
+    return {
+        'tool': 'analyze_sentiment',
+        'analysis': analysis,
+        'query_timestamp': datetime.now().isoformat()
+    }
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Starting CallDelta MCP Server on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
