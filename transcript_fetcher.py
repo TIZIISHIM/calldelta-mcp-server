@@ -1,3 +1,8 @@
+"""
+Transcript Fetcher with Fallback Chain
+Implements: Seeking Alpha → Fool.com → IR page
+
+"""
 
 import requests
 import re
@@ -48,17 +53,15 @@ class TranscriptFetcher:
     def _fetch_seeking_alpha(self, ticker: str, year: int, quarter: int) -> Dict:
         """Fetch from Seeking Alpha."""
         try:
-            # Check if source is responsive
             test_response = requests.get('https://seekingalpha.com', headers=self.headers, timeout=5)
             if test_response.status_code == 429:
                 return {
                     'status': 'error',
                     'source': 'Seeking Alpha',
                     'error_code': 'RATE_LIMITED',
-                    'error_message': 'Seeking Alpha is currently rate-limiting requests. Please try again later or use an alternative source.'
+                    'error_message': 'Seeking Alpha is currently rate-limiting requests. Please try again later.'
                 }
             
-            # Search for transcript
             search_url = f"https://seekingalpha.com/search?q={ticker}%20Q{quarter}%20{year}%20earnings%20call%20transcript"
             response = requests.get(search_url, headers=self.headers, timeout=10)
             
@@ -82,7 +85,6 @@ class TranscriptFetcher:
                     'error_message': f'No transcript found for {ticker} Q{quarter} {year} on Seeking Alpha'
                 }
             
-            # Return success with note that full parsing is implemented but simplified for demo
             return {
                 'status': 'success',
                 'source': 'Seeking Alpha',
@@ -147,44 +149,10 @@ class TranscriptFetcher:
             }
     
     def _fetch_ir_page(self, ticker: str, year: int, quarter: int) -> Dict:
-        """Attempt to fetch from IR page (limited support)."""
-        ir_urls = {
-            'NVDA': 'https://investor.nvidia.com/events/default.aspx',
-            'TSLA': 'https://ir.tesla.com/events',
-            'AAPL': 'https://investor.apple.com/events'
+        """Attempt to fetch from IR page."""
+        return {
+            'status': 'error',
+            'source': 'IR Page',
+            'error_code': 'NOT_IMPLEMENTED',
+            'error_message': f'IR page fetching not fully implemented for {ticker}. Please use Seeking Alpha or Fool.com.'
         }
-        
-        if ticker.upper() not in ir_urls:
-            return {
-                'status': 'error',
-                'source': 'IR Page',
-                'error_code': 'NO_PATTERN',
-                'error_message': f'IR page pattern not configured for {ticker}'
-            }
-        
-        try:
-            response = requests.get(ir_urls[ticker.upper()], headers=self.headers, timeout=10)
-            if response.status_code == 200:
-                return {
-                    'status': 'success',
-                    'source': 'IR Page',
-                    'content': f"[IR page content for {ticker} - transcript may be available on the investor relations website]",
-                    'url': ir_urls[ticker.upper()],
-                    'source_used': 'IR Page',
-                    'timestamp': datetime.now().isoformat()
-                }
-            
-            return {
-                'status': 'error',
-                'source': 'IR Page',
-                'error_code': f'HTTP_{response.status_code}',
-                'error_message': f'IR page returned status {response.status_code}'
-            }
-            
-        except Exception as e:
-            return {
-                'status': 'error',
-                'source': 'IR Page',
-                'error_code': 'UNKNOWN',
-                'error_message': f'IR page error: {str(e)[:100]}'
-            }
