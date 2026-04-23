@@ -2,10 +2,9 @@
 
 import os
 import json
-import asyncio
 from datetime import datetime
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -36,10 +35,7 @@ async def health():
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
-    """
-    HTTP Streaming endpoint for MCP protocol.
-    Context Protocol will POST JSON-RPC messages here.
-    """
+    """HTTP Streaming endpoint for MCP protocol."""
     try:
         body = await request.json()
     except Exception as e:
@@ -47,10 +43,7 @@ async def mcp_endpoint(request: Request):
             status_code=400,
             content={
                 "jsonrpc": "2.0",
-                "error": {
-                    "code": -32700,
-                    "message": f"Parse error: {str(e)}"
-                }
+                "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
             }
         )
     
@@ -77,8 +70,9 @@ async def mcp_endpoint(request: Request):
             }
         })
     
-    # Initialized notification
-    elif method == "initialized":
+    # Context sends "notifications/initialized" not "initialized"
+    elif method == "notifications/initialized":
+        # This is a notification - no response needed, but return 202 Accepted
         return Response(status_code=202)
     
     # List tools
@@ -94,11 +88,11 @@ async def mcp_endpoint(request: Request):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "ticker": {"type": "string"},
-                                "current_year": {"type": "integer"},
-                                "current_quarter": {"type": "integer"},
-                                "previous_year": {"type": "integer"},
-                                "previous_quarter": {"type": "integer"}
+                                "ticker": {"type": "string", "description": "Stock ticker symbol"},
+                                "current_year": {"type": "integer", "description": "Year of current earnings call"},
+                                "current_quarter": {"type": "integer", "description": "Quarter number (1-4)"},
+                                "previous_year": {"type": "integer", "description": "Year of previous earnings call"},
+                                "previous_quarter": {"type": "integer", "description": "Quarter number (1-4)"}
                             },
                             "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
                         }
@@ -109,7 +103,7 @@ async def mcp_endpoint(request: Request):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "text": {"type": "string"}
+                                "text": {"type": "string", "description": "Text to analyze"}
                             },
                             "required": ["text"]
                         }
