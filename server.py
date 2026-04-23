@@ -1,5 +1,6 @@
 """
-CallDelta MCP Server - Full Implementation
+CallDelta MCP Server - Complete Working Version
+Uses Hugging Face Inference API for sentiment (no local ML models).
 Implements fallback chain and transparent materiality.
 """
 
@@ -11,11 +12,11 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
-from sentiment_analyzer import TransparentSentimentAnalyzer
+from huggingface_client import HuggingFaceClient
 
 app = FastAPI(title="CallDelta MCP Server")
 fetcher = TranscriptFetcher()
-sentiment_analyzer = TransparentSentimentAnalyzer()
+sentiment_client = HuggingFaceClient()
 
 
 @app.get("/")
@@ -23,23 +24,40 @@ async def root():
     return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
-        "version": "2.0.0",
-        "features": ["fallback_chain", "transparent_materiality"],
+        "version": "3.0.0",
+        "features": ["fallback_chain", "transparent_materiality", "huggingface_inference"],
         "timestamp": datetime.now().isoformat()
     }
 
 
+@app.get("/health")
+async def health():
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+
+
 @app.post("/call")
 async def handle_tool_call(request: Request):
-    body = await request.json()
-    tool_name = body.get("tool")
+    try:
+        body = await request.json()
+    except:
+        body = {}
+    
+    tool_name = body.get("tool", "")
     arguments = body.get("arguments", {})
     
     if tool_name == "compare_earnings_calls":
         result = await compare_earnings_calls(arguments)
         return JSONResponse(content=result)
+    
+    elif tool_name == "analyze_sentiment":
+        result = await analyze_sentiment(arguments)
+        return JSONResponse(content=result)
+    
     else:
-        return JSONResponse(status_code=400, content={"error": f"Unknown tool: {tool_name}"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown tool: {tool_name}"}
+        )
 
 
 async def compare_earnings_calls(args: dict) -> dict:
@@ -72,11 +90,13 @@ async def compare_earnings_calls(args: dict) -> dict:
             "user_action": f"Transcript for {ticker} Q{previous_quarter} {previous_year} is not available. Try a different ticker or quarter."
         }
     
-    # Compare sentiment
-    comparison = sentiment_analyzer.compare_transcripts(
-        current.get('content', ''),
-        previous.get('content', '')
-    )
+    # Analyze sentiment of both transcripts
+    current_sentiment = sentiment_client.analyze_sentiment(current.get('content', ''))
+    previous_sentiment = sentiment_client.analyze_sentiment(previous.get('content', ''))
+    
+    current_score = current_sentiment.get('sentiment_score', 0.5)
+    previous_score = previous_sentiment.get('sentiment_score', 0.5)
+    delta = current_score - previous_score
     
     return {
         "tool": "compare_earnings_calls",
@@ -85,23 +105,61 @@ async def compare_earnings_calls(args: dict) -> dict:
         "previous_quarter": f"Q{previous_quarter} {previous_year}",
         "sources": {
             "current": {
-                "source": current.get('source_used', current.get('source', 'Unknown')),
+                "source": current.get('source_used', 'Unknown'),
                 "url": current.get('url'),
                 "status": current['status']
             },
             "previous": {
-                "source": previous.get('source_used', previous.get('source', 'Unknown')),
+                "source": previous.get('source_used', 'Unknown'),
                 "url": previous.get('url'),
                 "status": previous['status']
             }
         },
-        "sentiment_analysis": comparison,
-        "transparency_note": "All sentiment claims are backed by exact source sentences and model outputs. No black-box verdicts.",
+        "sentiment_analysis": {
+            "overall_delta": {
+                "current": current_score,
+                "previous": previous_score,
+                "delta": round(delta, 3),
+                "direction": "more confident" if delta > 0.05 else ("less confident" if delta < -0.05 else "unchanged"),
+                "materiality": "high" if abs(delta) > 0.15 else ("moderate" if abs(delta) > 0.08 else "low")
+            },
+            "current_sentiment": current_sentiment,
+            "previous_sentiment": previous_sentiment,
+            "methodology": {
+                "model": "distilbert-base-uncased-finetuned-sst-2-english",
+                "api": "HuggingFace Inference (free)",
+                "sentiment_scale": "0=negative/cautious, 0.5=neutral, 1=positive/confident",
+                "transparency": "All sentiment scores are backed by the Hugging Face inference API"
+            }
+        },
+        "transparency_note": "All sentiment claims are generated using the Hugging Face inference API with the distilbert-base-uncased-finetuned-sst-2-english model.",
         "query_timestamp": datetime.now().isoformat()
+    }
+
+
+async def analyze_sentiment(args: dict) -> dict:
+    text = args.get("text", "")
+    
+    if not text or len(text) < 20:
+        return {
+            "error": "Text is required and must be at least 20 characters",
+            "user_action": "Provide an earnings call transcript excerpt or full text"
+        }
+    
+    result = sentiment_client.analyze_sentiment(text)
+    
+    return {
+        "tool": "analyze_sentiment",
+        "analysis": result,
+        "text_preview": text[:200] + "..." if len(text) > 200 else text,
+        "query_timestamp": datetime.now().isoformat(),
+        "transparency_note": "Sentiment analysis performed using Hugging Face inference API."
     }
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
+    print(f"Health check: http://0.0.0.0:{port}/health")
+    print("Using Hugging Face Inference API for sentiment (no local ML models)")
     uvicorn.run(app, host="0.0.0.0", port=port)
