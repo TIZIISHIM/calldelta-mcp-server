@@ -1,7 +1,4 @@
-"""
-Delta Detector for Earnings Call Transcripts
-Detects added, removed, and modified passages between two transcripts.
-"""
+
 
 import difflib
 import re
