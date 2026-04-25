@@ -1,5 +1,3 @@
-
-
 import os
 import json
 from datetime import datetime
@@ -72,7 +70,6 @@ async def mcp_endpoint(request: Request):
     
     # Context sends "notifications/initialized" not "initialized"
     elif method == "notifications/initialized":
-        # This is a notification - no response needed, but return 202 Accepted
         return Response(status_code=202)
     
     # List tools
@@ -95,6 +92,85 @@ async def mcp_endpoint(request: Request):
                                 "previous_quarter": {"type": "integer", "description": "Quarter number (1-4)"}
                             },
                             "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "ticker": {"type": "string"},
+                                "current_quarter": {"type": "string"},
+                                "previous_quarter": {"type": "string"},
+                                "sources": {
+                                    "type": "object",
+                                    "properties": {
+                                        "current": {
+                                            "type": "object",
+                                            "properties": {
+                                                "source": {"type": "string"},
+                                                "url": {"type": "string"}
+                                            }
+                                        },
+                                        "previous": {
+                                            "type": "object",
+                                            "properties": {
+                                                "source": {"type": "string"},
+                                                "url": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                },
+                                "sentiment_analysis": {
+                                    "type": "object",
+                                    "properties": {
+                                        "overall_delta": {
+                                            "type": "object",
+                                            "properties": {
+                                                "current": {"type": "number"},
+                                                "previous": {"type": "number"},
+                                                "delta": {"type": "number"},
+                                                "direction": {"type": "string"},
+                                                "materiality": {"type": "string"}
+                                            }
+                                        },
+                                        "current_evidence": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "sentence": {"type": "string"},
+                                                    "sentiment_label": {"type": "string"},
+                                                    "sentiment_score": {"type": "number"},
+                                                    "confidence": {"type": "number"}
+                                                }
+                                            }
+                                        },
+                                        "previous_evidence": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "sentence": {"type": "string"},
+                                                    "sentiment_label": {"type": "string"},
+                                                    "sentiment_score": {"type": "number"},
+                                                    "confidence": {"type": "number"}
+                                                }
+                                            }
+                                        },
+                                        "most_changed_sentence": {
+                                            "type": "object",
+                                            "properties": {
+                                                "current_sentence": {"type": "string"},
+                                                "current_score": {"type": "number"},
+                                                "previous_sentence": {"type": "string"},
+                                                "previous_score": {"type": "number"},
+                                                "delta": {"type": "number"}
+                                            }
+                                        },
+                                        "methodology": {"type": "object"}
+                                    }
+                                },
+                                "transparency_note": {"type": "string"},
+                                "timestamp": {"type": "string"}
+                            }
                         }
                     },
                     {
@@ -106,6 +182,36 @@ async def mcp_endpoint(request: Request):
                                 "text": {"type": "string", "description": "Text to analyze"}
                             },
                             "required": ["text"]
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "analysis": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sentiment_label": {"type": "string"},
+                                        "sentiment_score": {"type": "number"},
+                                        "confidence": {"type": "number"},
+                                        "evidence": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "sentence": {"type": "string"},
+                                                    "sentiment_label": {"type": "string"},
+                                                    "sentiment_score": {"type": "number"},
+                                                    "confidence": {"type": "number"}
+                                                }
+                                            }
+                                        },
+                                        "sentence_count": {"type": "integer"},
+                                        "model_used": {"type": "string"},
+                                        "api": {"type": "string"},
+                                        "transparency_note": {"type": "string"}
+                                    }
+                                },
+                                "timestamp": {"type": "string"}
+                            }
                         }
                     }
                 ]
