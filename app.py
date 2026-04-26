@@ -5,12 +5,13 @@ CallDelta MCP Server - FastMCP Implementation with Working SSE
 import os
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
+import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
 
 # Initialize MCP server
-mcp = FastMCP("CallDelta MCP Server", port=int(os.environ.get("PORT", 8080)))
+mcp = FastMCP("CallDelta MCP Server")
 
 # Initialize fetchers
 fetcher = TranscriptFetcher()
@@ -99,23 +100,11 @@ def analyze_sentiment(text: str) -> dict:
     }
 
 
-# Simple health endpoint
-@mcp.get("/health")
-async def health():
-    return {"status": "alive", "timestamp": datetime.now().isoformat()}
-
-
-@mcp.get("/")
-async def root():
-    return {
-        "status": "healthy",
-        "service": "CallDelta MCP Server",
-        "version": "6.0.0",
-        "features": ["fallback_chain", "transparent_materiality", "sentence_level_evidence", "ir_fallback_implemented", "fastmcp_sse"],
-        "timestamp": datetime.now().isoformat()
-    }
-
-
 if __name__ == "__main__":
-    # Run with SSE transport (what Context expects)
-    mcp.run(transport="sse")
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Starting CallDelta MCP Server on port {port}")
+    print(f"Features: real transcript extraction, IR fallback, real sentiment scores, FastMCP SSE")
+    
+    # Run with SSE transport on the specified port
+    # FastMCP automatically creates /sse endpoint
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
