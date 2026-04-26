@@ -1,21 +1,23 @@
-"""
-CallDelta MCP Server - FastMCP Implementation with Working SSE
-"""
+
 
 import os
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
-import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
 
-# Initialize MCP server
-mcp = FastMCP("CallDelta MCP Server")
-
 # Initialize fetchers
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
+
+# IMPORTANT: host and port go HERE, not in run()
+port = int(os.environ.get("PORT", 8080))
+mcp = FastMCP(
+    name="CallDelta MCP Server",
+    host="0.0.0.0",  # ← host goes here
+    port=port        # ← port goes here
+)
 
 
 @mcp.tool(
@@ -101,10 +103,9 @@ def analyze_sentiment(text: str) -> dict:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
-    print(f"Features: real transcript extraction, IR fallback, real sentiment scores, FastMCP SSE")
+    print(f"Features: real transcript extraction, IR fallback, real sentiment scores, MCP Python SDK")
+    print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
     
-    # Run with SSE transport on the specified port
-    # FastMCP automatically creates /sse endpoint
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    # Correct: no host/port in run() - they are already in constructor
+    mcp.run(transport="sse")
