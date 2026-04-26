@@ -3,10 +3,11 @@
 import os
 from datetime import datetime
 from typing import Dict, Any
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_mcp_server import mount_mcp, Mcp
 from flask_mcp_server.http_integrated import mw_auth, mw_ratelimit, mw_cors
 from dotenv import load_dotenv
+
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
@@ -126,12 +127,17 @@ def root():
     })
 
 
+@app.route('/mcp', methods=['GET'])
+def mcp_get_disabled():
+    """Return 405 Method Not Allowed to tell client SSE is not supported.
+    This forces the client to fall back to POST-only communication."""
+    return jsonify({
+        "error": "Method Not Allowed",
+        "message": "SSE streams not supported. Use POST for MCP communication."
+    }), 405, {'Allow': 'POST, DELETE, OPTIONS'}
+
 #  Mount MCP with full auth middleware (satisfies Context SDK requirement)
-mount_mcp(
-    app,
-    url_prefix="/mcp",
-    middlewares=[mw_auth, mw_ratelimit, mw_cors]
-)
+mount_mcp(app, url_prefix="/mcp", middlewares=[mw_auth, mw_ratelimit, mw_cors])
 
 
 if __name__ == "__main__":
