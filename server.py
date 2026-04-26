@@ -1,12 +1,19 @@
+
+
 import os
 import json
+import jwt
 from datetime import datetime
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import JSONResponse
 import uvicorn
+from dotenv import load_dotenv
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
+
+load_dotenv()
 
 app = FastAPI(title="CallDelta MCP Server")
 fetcher = TranscriptFetcher()
@@ -14,14 +21,39 @@ sentiment_client = HuggingFaceClient()
 
 PROTOCOL_VERSION = "2024-11-05"
 
+# Auth setup for Context Protocol
+security = HTTPBearer(auto_error=False)
+
+# Get Context public key for JWT verification (from well-known endpoint)
+CONTEXT_JWKS_URL = "https://www.ctxprotocol.com/.well-known/jwks.json"
+
+
+def verify_context_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Verify Context Protocol JWT for paid tools.
+    For free tools ($0), this is optional but included for future-proofing.
+    """
+    # If price is $0, we can skip verification
+    # For paid tools, uncomment the verification logic
+    
+    # If no credentials provided and tool is free, allow access
+    if not credentials:
+        return {"authenticated": False, "reason": "no_credentials"}
+    
+    token = credentials.credentials
+    
+    # For now, accept all tokens (free tier)
+    # When ready to charge, implement real JWT verification
+    return {"authenticated": True, "token": token[:20] + "..."}
+
 
 @app.get("/")
 async def root():
     return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
-        "version": "4.0.0",
-        "features": ["fallback_chain", "transparent_materiality", "sentence_level_evidence"],
+        "version": "5.0.0",
+        "features": ["fallback_chain", "transparent_materiality", "sentence_level_evidence", "ir_fallback_implemented", "context_auth_ready"],
         "timestamp": datetime.now().isoformat()
     }
 
@@ -32,8 +64,8 @@ async def health():
 
 
 @app.post("/mcp")
-async def mcp_endpoint(request: Request):
-    """HTTP Streaming endpoint for MCP protocol."""
+async def mcp_endpoint(request: Request, auth: dict = Depends(verify_context_auth)):
+    """Main MCP endpoint with Context auth integration."""
     try:
         body = await request.json()
     except Exception as e:
@@ -58,17 +90,15 @@ async def mcp_endpoint(request: Request):
             "id": msg_id,
             "result": {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {
-                    "tools": {}
-                },
+                "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "calldelta-mcp-server",
-                    "version": "4.0.0"
+                    "version": "5.0.0"
                 }
             }
         })
     
-    # Context sends "notifications/initialized" not "initialized"
+    # Initialized notification
     elif method == "notifications/initialized":
         return Response(status_code=202)
     
@@ -85,7 +115,7 @@ async def mcp_endpoint(request: Request):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "ticker": {"type": "string", "description": "Stock ticker symbol"},
+                                "ticker": {"type": "string", "description": "Stock ticker symbol (e.g., NVDA, TSLA, AAPL)"},
                                 "current_year": {"type": "integer", "description": "Year of current earnings call"},
                                 "current_quarter": {"type": "integer", "description": "Quarter number (1-4)"},
                                 "previous_year": {"type": "integer", "description": "Year of previous earnings call"},
@@ -102,20 +132,8 @@ async def mcp_endpoint(request: Request):
                                 "sources": {
                                     "type": "object",
                                     "properties": {
-                                        "current": {
-                                            "type": "object",
-                                            "properties": {
-                                                "source": {"type": "string"},
-                                                "url": {"type": "string"}
-                                            }
-                                        },
-                                        "previous": {
-                                            "type": "object",
-                                            "properties": {
-                                                "source": {"type": "string"},
-                                                "url": {"type": "string"}
-                                            }
-                                        }
+                                        "current": {"type": "object", "properties": {"source": {"type": "string"}, "url": {"type": "string"}}},
+                                        "previous": {"type": "object", "properties": {"source": {"type": "string"}, "url": {"type": "string"}}}
                                     }
                                 },
                                 "sentiment_analysis": {
@@ -131,40 +149,8 @@ async def mcp_endpoint(request: Request):
                                                 "materiality": {"type": "string"}
                                             }
                                         },
-                                        "current_evidence": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "sentence": {"type": "string"},
-                                                    "sentiment_label": {"type": "string"},
-                                                    "sentiment_score": {"type": "number"},
-                                                    "confidence": {"type": "number"}
-                                                }
-                                            }
-                                        },
-                                        "previous_evidence": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "sentence": {"type": "string"},
-                                                    "sentiment_label": {"type": "string"},
-                                                    "sentiment_score": {"type": "number"},
-                                                    "confidence": {"type": "number"}
-                                                }
-                                            }
-                                        },
-                                        "most_changed_sentence": {
-                                            "type": "object",
-                                            "properties": {
-                                                "current_sentence": {"type": "string"},
-                                                "current_score": {"type": "number"},
-                                                "previous_sentence": {"type": "string"},
-                                                "previous_score": {"type": "number"},
-                                                "delta": {"type": "number"}
-                                            }
-                                        },
+                                        "current_evidence": {"type": "array"},
+                                        "previous_evidence": {"type": "array"},
                                         "methodology": {"type": "object"}
                                     }
                                 },
@@ -192,22 +178,8 @@ async def mcp_endpoint(request: Request):
                                         "sentiment_label": {"type": "string"},
                                         "sentiment_score": {"type": "number"},
                                         "confidence": {"type": "number"},
-                                        "evidence": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "sentence": {"type": "string"},
-                                                    "sentiment_label": {"type": "string"},
-                                                    "sentiment_score": {"type": "number"},
-                                                    "confidence": {"type": "number"}
-                                                }
-                                            }
-                                        },
-                                        "sentence_count": {"type": "integer"},
-                                        "model_used": {"type": "string"},
-                                        "api": {"type": "string"},
-                                        "transparency_note": {"type": "string"}
+                                        "evidence": {"type": "array"},
+                                        "sentence_count": {"type": "integer"}
                                     }
                                 },
                                 "timestamp": {"type": "string"}
@@ -243,7 +215,8 @@ async def mcp_endpoint(request: Request):
             "result": {
                 "content": [
                     {"type": "text", "text": json.dumps(result, indent=2)}
-                ]
+                ],
+                "structuredContent": result
             }
         })
     
@@ -260,6 +233,7 @@ async def mcp_endpoint(request: Request):
 
 
 async def compare_earnings_calls(args: dict) -> dict:
+    """Compare two earnings calls and return sentiment delta with evidence."""
     ticker = args.get("ticker", "").upper()
     current_year = args.get("current_year")
     current_quarter = args.get("current_quarter")
@@ -269,15 +243,30 @@ async def compare_earnings_calls(args: dict) -> dict:
     if not ticker:
         return {"error": "Ticker is required"}
     
+    if not all([current_year, current_quarter, previous_year, previous_quarter]):
+        return {"error": "Year and quarter fields are required"}
+    
+    # Fetch current transcript
     current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
-    previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
     
     if current.get('status') == 'error':
-        return {"error": "Failed to fetch current transcript", "details": current}
+        return {
+            "error": f"Failed to fetch current transcript for {ticker} Q{current_quarter} {current_year}",
+            "details": current,
+            "suggestion": "Try a different ticker or quarter. For example: NVDA Q3 2024 vs Q2 2024, AAPL Q4 2024, TSLA Q2 2024"
+        }
+    
+    # Fetch previous transcript
+    previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
     
     if previous.get('status') == 'error':
-        return {"error": "Failed to fetch previous transcript", "details": previous}
+        return {
+            "error": f"Failed to fetch previous transcript for {ticker} Q{previous_quarter} {previous_year}",
+            "details": previous,
+            "suggestion": "Try a different ticker or quarter. For example: NVDA Q2 2024, AAPL Q3 2024, TSLA Q1 2024"
+        }
     
+    # Compare sentiment with sentence-level evidence
     comparison = sentiment_client.compare_with_evidence(
         current.get('content', ''),
         previous.get('content', '')
@@ -288,23 +277,37 @@ async def compare_earnings_calls(args: dict) -> dict:
         "current_quarter": f"Q{current_quarter} {current_year}",
         "previous_quarter": f"Q{previous_quarter} {previous_year}",
         "sources": {
-            "current": {"source": current.get('source_used'), "url": current.get('url')},
-            "previous": {"source": previous.get('source_used'), "url": previous.get('url')}
+            "current": {
+                "source": current.get('source_used', 'Unknown'),
+                "url": current.get('url', '')
+            },
+            "previous": {
+                "source": previous.get('source_used', 'Unknown'),
+                "url": previous.get('url', '')
+            }
         },
         "sentiment_analysis": comparison,
-        "transparency_note": "All claims backed by sentence-level evidence.",
+        "transparency_note": "All sentiment claims are backed by exact sentence-level evidence. See current_evidence and previous_evidence arrays for exact sentences and their scores.",
         "timestamp": datetime.now().isoformat()
     }
 
 
 async def analyze_sentiment(args: dict) -> dict:
+    """Analyze sentiment of a single text passage."""
     text = args.get("text", "")
-    if len(text) < 20:
-        return {"error": "Text must be at least 20 characters"}
+    
+    if not text or len(text) < 20:
+        return {
+            "error": "Text is required and must be at least 20 characters",
+            "suggestion": "Provide an earnings call transcript excerpt or any financial text to analyze"
+        }
     
     result = sentiment_client.analyze_sentiment_with_evidence(text)
+    
     return {
         "analysis": result,
+        "text_preview": text[:300] + "..." if len(text) > 300 else text,
+        "transparency_note": "Sentiment analysis performed with sentence-level evidence. Each sentence in the evidence array shows its individual sentiment score.",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -313,4 +316,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
+    print(f"Health check: http://0.0.0.0:{port}/health")
+    print("Features: real transcript extraction, IR fallback, real sentiment scores, Context auth ready")
     uvicorn.run(app, host="0.0.0.0", port=port)
