@@ -1,44 +1,34 @@
-
+"""
+CallDelta MCP Server - FastMCP Implementation with Working SSE
+"""
 
 import os
 from datetime import datetime
-from typing import Dict, Any
-from flask import Flask, jsonify, request
-from flask_mcp_server import mount_mcp, Mcp
-from flask_mcp_server.http_integrated import mw_auth, mw_ratelimit, mw_cors
-from dotenv import load_dotenv
-
+from mcp.server.fastmcp import FastMCP
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
 
-load_dotenv()
-
-# Initialize Flask app
-app = Flask(__name__)
-
-# Initialize MCP - no app argument needed
-mcp = Mcp()
+# Initialize MCP server
+mcp = FastMCP("CallDelta MCP Server", port=int(os.environ.get("PORT", 8080)))
 
 # Initialize fetchers
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
 
-# Tool 1: Compare earnings calls
-# The schema is automatically inferred from type hints (ticker: str, current_year: int, etc.)
-@Mcp.tool(name="compare_earnings_calls")
+@mcp.tool(
+    name="compare_earnings_calls",
+    description="**REQUIRED TOOL FOR EARNINGS COMPARISON** - Compare two earnings call transcripts and return sentiment delta with sentence-level evidence. Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison."
+)
 def compare_earnings_calls(
     ticker: str,
     current_year: int,
     current_quarter: int,
     previous_year: int,
     previous_quarter: int
-) -> Dict[str, Any]:
-    """
-    Compare two earnings call transcripts and return sentiment delta with sentence-level evidence.
-    Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison.
-    """
+) -> dict:
+    """Compare two earnings calls and return sentiment delta with evidence."""
     ticker = ticker.upper()
     
     # Fetch current transcript
@@ -87,13 +77,12 @@ def compare_earnings_calls(
     }
 
 
-# Tool 2: Analyze sentiment
-@Mcp.tool(name="analyze_sentiment")
-def analyze_sentiment(text: str) -> Dict[str, Any]:
-    """
-    Analyze sentiment of earnings call text, financial text, or any qualitative passage.
-    Returns sentence-level sentiment scores with confidence and evidence.
-    """
+@mcp.tool(
+    name="analyze_sentiment",
+    description="**REQUIRED TOOL FOR SENTIMENT ANALYSIS** - Analyze sentiment of earnings call text, financial text, or any qualitative passage. Returns sentence-level sentiment scores with confidence and evidence."
+)
+def analyze_sentiment(text: str) -> dict:
+    """Analyze sentiment of a single text passage."""
     if not text or len(text) < 20:
         return {
             "error": "Text is required and must be at least 20 characters",
@@ -110,40 +99,23 @@ def analyze_sentiment(text: str) -> Dict[str, Any]:
     }
 
 
-# Health check endpoint
-@app.route('/health')
-def health():
-    return jsonify({"status": "alive", "timestamp": datetime.now().isoformat()})
+# Simple health endpoint
+@mcp.get("/health")
+async def health():
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 
-@app.route('/')
-def root():
-    return jsonify({
+@mcp.get("/")
+async def root():
+    return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
         "version": "6.0.0",
-        "features": ["fallback_chain", "transparent_materiality", "sentence_level_evidence", "ir_fallback_implemented", "context_auth_middleware"],
+        "features": ["fallback_chain", "transparent_materiality", "sentence_level_evidence", "ir_fallback_implemented", "fastmcp_sse"],
         "timestamp": datetime.now().isoformat()
-    })
-
-
-@app.route('/mcp', methods=['GET'])
-def mcp_get_disabled():
-    """Return 405 Method Not Allowed to tell client SSE is not supported.
-    This forces the client to fall back to POST-only communication."""
-    return jsonify({
-        "error": "Method Not Allowed",
-        "message": "SSE streams not supported. Use POST for MCP communication."
-    }), 405, {'Allow': 'POST, DELETE, OPTIONS'}
-
-#  Mount MCP with full auth middleware (satisfies Context SDK requirement)
-mount_mcp(app, url_prefix="/mcp", middlewares=[mw_auth, mw_ratelimit, mw_cors])
+    }
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    print(f"Starting CallDelta MCP Server on port {port}")
-    print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
-    print(f"Health check: http://0.0.0.0:{port}/health")
-    print("Features: real transcript extraction, IR fallback, real sentiment scores, Context auth middleware")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    # Run with SSE transport (what Context expects)
+    mcp.run(transport="sse")
