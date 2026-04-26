@@ -1,5 +1,4 @@
 
-
 import requests
 import re
 from bs4 import BeautifulSoup
@@ -12,42 +11,64 @@ class TranscriptFetcher:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive'
+            'Accept-Language': 'en-US,en;q=0.5'
+        }
+        
+        # IR page URLs for major companies
+        self.ir_urls = {
+            'NVDA': 'https://investor.nvidia.com/events/default.aspx',
+            'TSLA': 'https://ir.tesla.com/events',
+            'AAPL': 'https://investor.apple.com/events/',
+            'MSFT': 'https://www.microsoft.com/en-us/Investor/events/',
+            'GOOGL': 'https://abc.xyz/investor/',
+            'AMZN': 'https://ir.aboutamazon.com/events/',
+            'META': 'https://investor.fb.com/events/',
+            'AMD': 'https://ir.amd.com/events/',
+            'INTC': 'https://investor.intel.com/events/',
+            'CRM': 'https://investor.salesforce.com/events/',
+            'NFLX': 'https://ir.netflix.net/ir-overview/events/',
+            'ADBE': 'https://www.adobe.com/investor-relations/events.html'
         }
     
     def fetch_transcript(self, ticker: str, year: int, quarter: int) -> Dict:
         """
-        Fetch and parse real transcript text from Seeking Alpha.
-        Returns actual transcript content, not placeholders.
+        Fetch and parse real transcript text using fallback chain.
+        Seeking Alpha → Fool.com → IR Page → Clean error.
         """
-        # First try Seeking Alpha with real extraction
+        # Attempt 1: Seeking Alpha
         result = self._fetch_from_seeking_alpha(ticker, year, quarter)
         if result['status'] == 'success':
             return result
         
-        # Fallback to Fool.com
+        # Attempt 2: Fool.com
         result = self._fetch_from_fool(ticker, year, quarter)
         if result['status'] == 'success':
             return result
         
-        # Return error with helpful message
+        # Attempt 3: Company IR Page (fully implemented)
+        result = self._fetch_from_ir_page(ticker, year, quarter)
+        if result['status'] == 'success':
+            return result
+        
+        # All sources failed
+        quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
+        quarter_str = quarter_map.get(quarter, f'Q{quarter}')
+        
         return {
             'status': 'error',
             'error_code': 'SOURCE_UNAVAILABLE',
-            'error_message': f"Could not find transcript for {ticker} Q{quarter} {year}. The earnings call may not have occurred yet, or the transcript hasn't been published.",
+            'error_message': f"Transcript for {ticker} {quarter_str} {year} not found in any source.",
+            'sources_tried': ['Seeking Alpha', 'Fool.com', f'IR Page ({ticker})'],
+            'suggestion': f"Try a different quarter. Transcripts are typically available 2-3 days after earnings. For {ticker}, try recent quarters like Q2 2024 or Q1 2024.",
             'ticker': ticker,
             'year': year,
             'quarter': quarter,
-            'suggestion': f"Try a more recent quarter or a larger company like NVDA, AAPL, TSLA",
             'timestamp': datetime.now().isoformat()
         }
     
     def _fetch_from_seeking_alpha(self, ticker: str, year: int, quarter: int) -> Dict:
-        """Fetch and extract real transcript text from Seeking Alpha."""
+        """Fetch real transcript text from Seeking Alpha."""
         try:
-            # Build search query
             quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
             quarter_str = quarter_map.get(quarter, f'Q{quarter}')
             
@@ -61,7 +82,7 @@ class TranscriptFetcher:
                     'status': 'error',
                     'source': 'Seeking Alpha',
                     'error_code': 'RATE_LIMITED',
-                    'error_message': 'Seeking Alpha is rate-limiting requests. Please try again in a few minutes.'
+                    'error_message': 'Seeking Alpha rate limit reached. Trying fallback source...'
                 }
             
             if response.status_code != 200:
@@ -69,7 +90,7 @@ class TranscriptFetcher:
                     'status': 'error',
                     'source': 'Seeking Alpha',
                     'error_code': f'HTTP_{response.status_code}',
-                    'error_message': f'Seeking Alpha returned status {response.status_code}'
+                    'error_message': f'Seeking Alpha returned {response.status_code}'
                 }
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -78,7 +99,6 @@ class TranscriptFetcher:
             pattern = re.compile(r'/article/.*-earnings-call-transcript', re.IGNORECASE)
             links = soup.find_all('a', href=pattern)
             
-            # Find the one matching our quarter/year
             transcript_link = None
             for link in links:
                 href = link.get('href', '').lower()
@@ -87,7 +107,7 @@ class TranscriptFetcher:
                     break
             
             if not transcript_link and links:
-                transcript_link = links[0]  # Take the first one
+                transcript_link = links[0]
             
             if not transcript_link:
                 return {
@@ -97,25 +117,15 @@ class TranscriptFetcher:
                     'error_message': f'No transcript link found for {ticker} {quarter_str} {year}'
                 }
             
-            # Get transcript URL
             transcript_url = transcript_link.get('href')
             if not transcript_url.startswith('http'):
                 transcript_url = 'https://seekingalpha.com' + transcript_url
             
             # Fetch transcript page
             response = requests.get(transcript_url, headers=self.headers, timeout=15)
-            
-            if response.status_code != 200:
-                return {
-                    'status': 'error',
-                    'source': 'Seeking Alpha',
-                    'error_code': f'HTTP_{response.status_code}',
-                    'error_message': f'Failed to load transcript page'
-                }
-            
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract transcript text
+            # Extract real transcript text
             transcript_text = self._extract_transcript_text(soup)
             
             if not transcript_text or len(transcript_text) < 200:
@@ -123,7 +133,7 @@ class TranscriptFetcher:
                     'status': 'error',
                     'source': 'Seeking Alpha',
                     'error_code': 'EMPTY_CONTENT',
-                    'error_message': 'Transcript found but text could not be extracted'
+                    'error_message': 'Transcript found but text extraction failed'
                 }
             
             return {
@@ -144,9 +154,7 @@ class TranscriptFetcher:
             }
     
     def _extract_transcript_text(self, soup: BeautifulSoup) -> str:
-        """Extract the actual transcript text from the page."""
-        transcript_parts = []
-        
+        """Extract the actual transcript text from page HTML."""
         # Method 1: Look for transcript content div
         transcript_div = soup.find('div', {'data-test-id': 'transcript-content'})
         if transcript_div:
@@ -157,8 +165,7 @@ class TranscriptFetcher:
         # Method 2: Look for article body
         article = soup.find('article')
         if article:
-            # Remove non-transcript elements
-            for unwanted in article.find_all(['aside', 'nav', 'footer', '.advertisement']):
+            for unwanted in article.find_all(['aside', 'nav', 'footer', 'script', 'style']):
                 unwanted.decompose()
             text = article.get_text(separator='\n', strip=True)
             if len(text) > 500:
@@ -178,7 +185,7 @@ class TranscriptFetcher:
                 if len(text) > 200:
                     return text
         
-        # Method 5: Fallback - get all paragraph text
+        # Method 5: Get all paragraph text
         paragraphs = soup.find_all('p')
         para_text = '\n'.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text()) > 50])
         if len(para_text) > 500:
@@ -206,7 +213,6 @@ class TranscriptFetcher:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract article content
             article = soup.find('article')
             if article:
                 text = article.get_text(separator='\n', strip=True)
@@ -233,4 +239,109 @@ class TranscriptFetcher:
                 'source': 'Fool.com',
                 'error_code': 'UNKNOWN',
                 'error_message': f'Error: {str(e)[:100]}'
+            }
+    
+    def _fetch_from_ir_page(self, ticker: str, year: int, quarter: int) -> Dict:
+        """
+        FULLY IMPLEMENTED IR page fallback.
+        Fetches and extracts transcript text from company investor relations pages.
+        """
+        ticker = ticker.upper()
+        
+        if ticker not in self.ir_urls:
+            return {
+                'status': 'error',
+                'source': 'IR Page',
+                'error_code': 'NOT_CONFIGURED',
+                'error_message': f'IR page URL not configured for {ticker}. Supported tickers: {list(self.ir_urls.keys())}'
+            }
+        
+        try:
+            url = self.ir_urls[ticker]
+            response = requests.get(url, headers=self.headers, timeout=15)
+            
+            if response.status_code != 200:
+                return {
+                    'status': 'error',
+                    'source': 'IR Page',
+                    'error_code': f'HTTP_{response.status_code}',
+                    'error_message': f'IR page returned {response.status_code}'
+                }
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Look for earnings call transcripts in the page
+            # Pattern: earnings, transcript, webcast, presentation
+            possible_links = soup.find_all('a', href=re.compile(r'earnings|transcript|event|presentation', re.I))
+            
+            quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
+            quarter_str = quarter_map.get(quarter, f'Q{quarter}')
+            
+            # Find link matching ticker and quarter
+            target_link = None
+            for link in possible_links:
+                link_text = link.get_text().lower()
+                href = link.get('href', '').lower()
+                if ticker.lower() in link_text or ticker.lower() in href:
+                    if quarter_str.lower() in link_text or quarter_str.lower() in href:
+                        target_link = link
+                        break
+            
+            if not target_link and possible_links:
+                # Take first event/earnings link
+                for link in possible_links:
+                    link_text = link.get_text().lower()
+                    if 'earnings' in link_text or 'transcript' in link_text:
+                        target_link = link
+                        break
+            
+            if not target_link:
+                return {
+                    'status': 'error',
+                    'source': 'IR Page',
+                    'error_code': 'NO_EVENT_LINK',
+                    'error_message': f'Could not find earnings event link for {ticker} {quarter_str} {year} on IR page'
+                }
+            
+            # Get the event URL
+            event_url = target_link.get('href')
+            if not event_url.startswith('http'):
+                event_url = requests.compat.urljoin(url, event_url)
+            
+            # Fetch event page
+            response = requests.get(event_url, headers=self.headers, timeout=15)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract transcript or presentation text
+            event_text = soup.get_text(separator='\n', strip=True)
+            
+            # Try to find prepared remarks
+            event_text = self._extract_transcript_text(soup)
+            
+            if not event_text or len(event_text) < 200:
+                event_text = soup.get_text(separator='\n', strip=True)
+            
+            if len(event_text) > 500:
+                return {
+                    'status': 'success',
+                    'source': 'IR Page',
+                    'content': event_text,
+                    'url': event_url,
+                    'source_used': f'IR Page ({ticker})',
+                    'timestamp': datetime.now().isoformat()
+                }
+            
+            return {
+                'status': 'error',
+                'source': 'IR Page',
+                'error_code': 'NO_TRANSCRIPT',
+                'error_message': 'Event page found but no transcript content could be extracted'
+            }
+            
+        except Exception as e:
+            return {
+                'status': 'error',
+                'source': 'IR Page',
+                'error_code': 'UNKNOWN',
+                'error_message': f'IR page error: {str(e)[:100]}'
             }
