@@ -11,18 +11,100 @@ from huggingface_client import HuggingFaceClient
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# IMPORTANT: host and port go HERE, not in run()
+# Initialize MCP server
 port = int(os.environ.get("PORT", 8080))
 mcp = FastMCP(
     name="CallDelta MCP Server",
-    host="0.0.0.0",  # ← host goes here
-    port=port        # ← port goes here
+    host="0.0.0.0",
+    port=port
 )
 
 
 @mcp.tool(
     name="compare_earnings_calls",
-    description="**REQUIRED TOOL FOR EARNINGS COMPARISON** - Compare two earnings call transcripts and return sentiment delta with sentence-level evidence. Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison."
+    description="**REQUIRED TOOL FOR EARNINGS COMPARISON** - Compare two earnings call transcripts and return sentiment delta with sentence-level evidence. Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison.",
+    outputSchema={
+        "type": "object",
+        "properties": {
+            "ticker": {"type": "string"},
+            "current_quarter": {"type": "string"},
+            "previous_quarter": {"type": "string"},
+            "sources": {
+                "type": "object",
+                "properties": {
+                    "current": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"},
+                            "url": {"type": "string"}
+                        }
+                    },
+                    "previous": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"},
+                            "url": {"type": "string"}
+                        }
+                    }
+                }
+            },
+            "sentiment_analysis": {
+                "type": "object",
+                "properties": {
+                    "overall_delta": {
+                        "type": "object",
+                        "properties": {
+                            "current": {"type": "number"},
+                            "previous": {"type": "number"},
+                            "delta": {"type": "number"},
+                            "direction": {"type": "string"},
+                            "materiality": {"type": "string"}
+                        }
+                    },
+                    "current_evidence": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "sentence": {"type": "string"},
+                                "sentiment_label": {"type": "string"},
+                                "sentiment_score": {"type": "number"},
+                                "confidence": {"type": "number"}
+                            }
+                        }
+                    },
+                    "previous_evidence": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "sentence": {"type": "string"},
+                                "sentiment_label": {"type": "string"},
+                                "sentiment_score": {"type": "number"},
+                                "confidence": {"type": "number"}
+                            }
+                        }
+                    },
+                    "most_changed_sentence": {
+                        "type": "object",
+                        "properties": {
+                            "current_sentence": {"type": "string"},
+                            "current_score": {"type": "number"},
+                            "previous_sentence": {"type": "string"},
+                            "previous_score": {"type": "number"},
+                            "delta": {"type": "number"}
+                        }
+                    },
+                    "methodology": {"type": "object"}
+                }
+            },
+            "transparency_note": {"type": "string"},
+            "error": {"type": "string"},
+            "details": {"type": "object"},
+            "suggestion": {"type": "string"},
+            "timestamp": {"type": "string"}
+        }
+    }
 )
 def compare_earnings_calls(
     ticker: str,
@@ -41,7 +123,8 @@ def compare_earnings_calls(
         return {
             "error": f"Failed to fetch current transcript for {ticker} Q{current_quarter} {current_year}",
             "details": current,
-            "suggestion": "Try a different ticker or quarter. Example: NVDA Q3 2024 vs Q2 2024"
+            "suggestion": "Try a different ticker or quarter. Example: NVDA Q3 2024 vs Q2 2024",
+            "timestamp": datetime.now().isoformat()
         }
     
     # Fetch previous transcript
@@ -51,7 +134,8 @@ def compare_earnings_calls(
         return {
             "error": f"Failed to fetch previous transcript for {ticker} Q{previous_quarter} {previous_year}",
             "details": previous,
-            "suggestion": "Try a different ticker or quarter. Example: NVDA Q2 2024"
+            "suggestion": "Try a different ticker or quarter. Example: NVDA Q2 2024",
+            "timestamp": datetime.now().isoformat()
         }
     
     # Compare sentiment with sentence-level evidence
@@ -82,14 +166,48 @@ def compare_earnings_calls(
 
 @mcp.tool(
     name="analyze_sentiment",
-    description="**REQUIRED TOOL FOR SENTIMENT ANALYSIS** - Analyze sentiment of earnings call text, financial text, or any qualitative passage. Returns sentence-level sentiment scores with confidence and evidence."
+    description="**REQUIRED TOOL FOR SENTIMENT ANALYSIS** - Analyze sentiment of earnings call text, financial text, or any qualitative passage. Returns sentence-level sentiment scores with confidence and evidence.",
+    outputSchema={
+        "type": "object",
+        "properties": {
+            "analysis": {
+                "type": "object",
+                "properties": {
+                    "sentiment_label": {"type": "string"},
+                    "sentiment_score": {"type": "number"},
+                    "confidence": {"type": "number"},
+                    "evidence": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "sentence": {"type": "string"},
+                                "sentiment_label": {"type": "string"},
+                                "sentiment_score": {"type": "number"},
+                                "confidence": {"type": "number"}
+                            }
+                        }
+                    },
+                    "sentence_count": {"type": "integer"},
+                    "model_used": {"type": "string"},
+                    "api": {"type": "string"},
+                    "transparency_note": {"type": "string"}
+                }
+            },
+            "text_preview": {"type": "string"},
+            "error": {"type": "string"},
+            "suggestion": {"type": "string"},
+            "timestamp": {"type": "string"}
+        }
+    }
 )
 def analyze_sentiment(text: str) -> dict:
     """Analyze sentiment of a single text passage."""
     if not text or len(text) < 20:
         return {
             "error": "Text is required and must be at least 20 characters",
-            "suggestion": "Provide an earnings call transcript excerpt or any financial text to analyze"
+            "suggestion": "Provide an earnings call transcript excerpt or any financial text to analyze",
+            "timestamp": datetime.now().isoformat()
         }
     
     result = sentiment_client.analyze_sentiment_with_evidence(text)
@@ -104,8 +222,7 @@ def analyze_sentiment(text: str) -> dict:
 
 if __name__ == "__main__":
     print(f"Starting CallDelta MCP Server on port {port}")
-    print(f"Features: real transcript extraction, IR fallback, real sentiment scores, MCP Python SDK")
+    print(f"Features: real transcript extraction, IR fallback, real sentiment scores, outputSchema included")
     print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
     
-    # Correct: no host/port in run() - they are already in constructor
     mcp.run(transport="sse")
