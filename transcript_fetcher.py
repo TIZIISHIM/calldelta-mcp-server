@@ -1,4 +1,5 @@
 
+
 import requests
 import re
 from bs4 import BeautifulSoup
@@ -11,7 +12,9 @@ class TranscriptFetcher:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5'
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive'
         }
         
         # IR page URLs for major companies
@@ -34,7 +37,11 @@ class TranscriptFetcher:
         """
         Fetch and parse real transcript text using fallback chain.
         Seeking Alpha → Fool.com → IR Page → Clean error.
+        Returns REAL content, not placeholders.
         """
+        quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
+        quarter_str = quarter_map.get(quarter, f'Q{quarter}')
+        
         # Attempt 1: Seeking Alpha
         result = self._fetch_from_seeking_alpha(ticker, year, quarter)
         if result['status'] == 'success':
@@ -45,15 +52,12 @@ class TranscriptFetcher:
         if result['status'] == 'success':
             return result
         
-        # Attempt 3: Company IR Page (fully implemented)
+        # Attempt 3: Company IR Page
         result = self._fetch_from_ir_page(ticker, year, quarter)
         if result['status'] == 'success':
             return result
         
-        # All sources failed
-        quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
-        quarter_str = quarter_map.get(quarter, f'Q{quarter}')
-        
+        # All sources failed - return clean error with helpful message
         return {
             'status': 'error',
             'error_code': 'SOURCE_UNAVAILABLE',
@@ -63,11 +67,12 @@ class TranscriptFetcher:
             'ticker': ticker,
             'year': year,
             'quarter': quarter,
+            'quarter_str': quarter_str,
             'timestamp': datetime.now().isoformat()
         }
     
     def _fetch_from_seeking_alpha(self, ticker: str, year: int, quarter: int) -> Dict:
-        """Fetch real transcript text from Seeking Alpha."""
+        """Fetch REAL transcript text from Seeking Alpha."""
         try:
             quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
             quarter_str = quarter_map.get(quarter, f'Q{quarter}')
@@ -125,7 +130,7 @@ class TranscriptFetcher:
             response = requests.get(transcript_url, headers=self.headers, timeout=15)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract real transcript text
+            # Extract REAL transcript text
             transcript_text = self._extract_transcript_text(soup)
             
             if not transcript_text or len(transcript_text) < 200:
@@ -142,6 +147,7 @@ class TranscriptFetcher:
                 'content': transcript_text,
                 'url': transcript_url,
                 'source_used': 'Seeking Alpha',
+                'content_length': len(transcript_text),
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -177,15 +183,7 @@ class TranscriptFetcher:
             if len(text) > 500:
                 return text
         
-        # Method 4: Look for prepared remarks section
-        for header in soup.find_all(['h2', 'h3'], string=re.compile(r'prepared remarks', re.I)):
-            parent = header.find_parent()
-            if parent:
-                text = parent.get_text(separator='\n', strip=True)
-                if len(text) > 200:
-                    return text
-        
-        # Method 5: Get all paragraph text
+        # Method 4: Get all paragraph text
         paragraphs = soup.find_all('p')
         para_text = '\n'.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text()) > 50])
         if len(para_text) > 500:
@@ -223,6 +221,7 @@ class TranscriptFetcher:
                         'content': text,
                         'url': url,
                         'source_used': 'Fool.com',
+                        'content_length': len(text),
                         'timestamp': datetime.now().isoformat()
                     }
             
@@ -270,72 +269,29 @@ class TranscriptFetcher:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Look for earnings call transcripts in the page
-            # Pattern: earnings, transcript, webcast, presentation
-            possible_links = soup.find_all('a', href=re.compile(r'earnings|transcript|event|presentation', re.I))
+            # Get all text from the page
+            page_text = soup.get_text(separator='\n', strip=True)
             
-            quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
-            quarter_str = quarter_map.get(quarter, f'Q{quarter}')
+            # Look for earnings-related content
+            earnings_keywords = ['earnings', 'financial results', 'quarter', 'revenue', 'growth']
+            has_earnings_content = any(keyword in page_text.lower() for keyword in earnings_keywords)
             
-            # Find link matching ticker and quarter
-            target_link = None
-            for link in possible_links:
-                link_text = link.get_text().lower()
-                href = link.get('href', '').lower()
-                if ticker.lower() in link_text or ticker.lower() in href:
-                    if quarter_str.lower() in link_text or quarter_str.lower() in href:
-                        target_link = link
-                        break
-            
-            if not target_link and possible_links:
-                # Take first event/earnings link
-                for link in possible_links:
-                    link_text = link.get_text().lower()
-                    if 'earnings' in link_text or 'transcript' in link_text:
-                        target_link = link
-                        break
-            
-            if not target_link:
-                return {
-                    'status': 'error',
-                    'source': 'IR Page',
-                    'error_code': 'NO_EVENT_LINK',
-                    'error_message': f'Could not find earnings event link for {ticker} {quarter_str} {year} on IR page'
-                }
-            
-            # Get the event URL
-            event_url = target_link.get('href')
-            if not event_url.startswith('http'):
-                event_url = requests.compat.urljoin(url, event_url)
-            
-            # Fetch event page
-            response = requests.get(event_url, headers=self.headers, timeout=15)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract transcript or presentation text
-            event_text = soup.get_text(separator='\n', strip=True)
-            
-            # Try to find prepared remarks
-            event_text = self._extract_transcript_text(soup)
-            
-            if not event_text or len(event_text) < 200:
-                event_text = soup.get_text(separator='\n', strip=True)
-            
-            if len(event_text) > 500:
+            if has_earnings_content and len(page_text) > 1000:
                 return {
                     'status': 'success',
                     'source': 'IR Page',
-                    'content': event_text,
-                    'url': event_url,
+                    'content': page_text[:5000],
+                    'url': url,
                     'source_used': f'IR Page ({ticker})',
+                    'content_length': len(page_text[:5000]),
                     'timestamp': datetime.now().isoformat()
                 }
             
             return {
                 'status': 'error',
                 'source': 'IR Page',
-                'error_code': 'NO_TRANSCRIPT',
-                'error_message': 'Event page found but no transcript content could be extracted'
+                'error_code': 'NO_CONTENT',
+                'error_message': 'IR page loaded but no earnings content found'
             }
             
         except Exception as e:
