@@ -3,8 +3,9 @@
 import os
 import json
 from datetime import datetime
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from ctxprotocol import create_context_middleware, ContextError
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -12,6 +13,14 @@ from huggingface_client import HuggingFaceClient
 
 # Initialize
 app = FastAPI(title="CallDelta MCP Server")
+
+# Create Context auth middleware
+# This verifies JWT tokens for tools/call requests
+verify_context = create_context_middleware(
+    audience="https://calldelta-mcp-server-production.up.railway.app/mcp"
+)
+
+# Initialize fetchers
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
@@ -70,12 +79,11 @@ AVAILABLE_TOOLS = [
 
 @app.get("/")
 async def root():
-    """Root endpoint - server info."""
     return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
-        "version": "8.0.0",
-        "features": ["http_endpoint", "outputSchema", "_meta", "fmp_api_ready"],
+        "version": "9.0.0",
+        "features": ["http_endpoint", "outputSchema", "_meta", "context_auth_middleware", "fmp_api_ready"],
         "tools": [t["name"] for t in AVAILABLE_TOOLS],
         "timestamp": datetime.now().isoformat()
     }
@@ -83,15 +91,18 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 
 @app.post("/mcp")
-async def mcp_endpoint(request: Request):
+async def mcp_endpoint(
+    request: Request,
+    context: dict = Depends(verify_context)  # This verifies JWT for protected methods
+):
     """
-    MCP endpoint - handles JSON-RPC messages.
-    This is the main endpoint Context will call.
+    MCP endpoint with Context auth middleware.
+    - tools/list and initialize: no auth required (context will be None)
+    - tools/call: requires valid JWT (context will contain verified payload)
     """
     try:
         body = await request.json()
@@ -105,8 +116,9 @@ async def mcp_endpoint(request: Request):
     msg_id = body.get("id")
     
     print(f"Received: {method} (id: {msg_id})")
+    print(f"Auth context: {context is not None}")
     
-    # Initialize handshake
+    # Initialize handshake (no auth required)
     if method == "initialize":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -114,15 +126,15 @@ async def mcp_endpoint(request: Request):
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "calldelta-mcp-server", "version": "8.0.0"}
+                "serverInfo": {"name": "calldelta-mcp-server", "version": "9.0.0"}
             }
         })
     
-    # Initialized notification
+    # Initialized notification (no auth required)
     elif method == "notifications/initialized":
         return JSONResponse(content={}, status_code=202)
     
-    # List tools
+    # List tools (no auth required)
     elif method == "tools/list":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -130,10 +142,13 @@ async def mcp_endpoint(request: Request):
             "result": {"tools": AVAILABLE_TOOLS}
         })
     
-    # Call tool
+    # Call tool (REQUIRES AUTH - handled by middleware)
     elif method == "tools/call":
+        # If we get here, the middleware has already verified the JWT
         tool_name = body.get("params", {}).get("name", "")
         arguments = body.get("params", {}).get("arguments", {})
+        
+        print(f"Executing tool: {tool_name} (authenticated)")
         
         if tool_name == "compare_earnings_calls":
             result = await compare_earnings_calls(arguments)
@@ -218,5 +233,5 @@ if __name__ == "__main__":
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
     print(f"Health check: http://0.0.0.0:{port}/health")
-    print("Features: HTTP endpoint, outputSchema, _meta, FMP API ready")
+    print("Features: HTTP endpoint, outputSchema, _meta, Context auth middleware")
     uvicorn.run(app, host="0.0.0.0", port=port)
