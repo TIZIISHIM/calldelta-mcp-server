@@ -11,6 +11,7 @@ class HuggingFaceClient:
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 10) -> Dict:
         sentences = re.split(r'(?<=[.!?])\s+', text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 30][:max_sentences]
+        
         if not sentences:
             return {'sentiment_label': 'neutral', 'sentiment_score': 0.5, 'confidence': 0.5, 'evidence': []}
         
@@ -23,7 +24,13 @@ class HuggingFaceClient:
         overall_score = sum(scores) / len(scores) if scores else 0.5
         label = 'positive' if overall_score > 0.6 else ('negative' if overall_score < 0.4 else 'neutral')
         
-        return {'sentiment_label': label, 'sentiment_score': round(overall_score, 3), 'confidence': round(abs(overall_score - 0.5) * 2, 3), 'evidence': sentence_results[:5]}
+        return {
+            'sentiment_label': label,
+            'sentiment_score': round(overall_score, 3),
+            'confidence': round(abs(overall_score - 0.5) * 2, 3),
+            'evidence': sentence_results[:5],
+            'sentence_count': len(sentence_results)
+        }
     
     def _analyze_sentence(self, sentence: str) -> Dict:
         api_url = "https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english"
@@ -35,7 +42,12 @@ class HuggingFaceClient:
                     label = result[0]['label']
                     score = result[0]['score']
                     sentiment_score = score if label == 'POSITIVE' else 1 - score
-                    return {'sentence': sentence[:300], 'sentiment_label': 'positive' if label == 'POSITIVE' else 'negative', 'sentiment_score': round(sentiment_score, 3), 'confidence': round(score, 3)}
+                    return {
+                        'sentence': sentence[:300],
+                        'sentiment_label': 'positive' if label == 'POSITIVE' else 'negative',
+                        'sentiment_score': round(sentiment_score, 3),
+                        'confidence': round(score, 3)
+                    }
             return {'sentence': sentence[:200], 'sentiment_label': 'neutral', 'sentiment_score': 0.5, 'confidence': 0.5}
         except:
             return {'sentence': sentence[:200], 'sentiment_label': 'neutral', 'sentiment_score': 0.5, 'confidence': 0.5}
@@ -46,4 +58,14 @@ class HuggingFaceClient:
         delta = current['sentiment_score'] - previous['sentiment_score']
         direction = 'more confident' if delta > 0.05 else ('less confident' if delta < -0.05 else 'unchanged')
         materiality = 'high' if abs(delta) > 0.15 else ('moderate' if abs(delta) > 0.08 else 'low')
-        return {'overall_delta': {'current': current['sentiment_score'], 'previous': previous['sentiment_score'], 'delta': round(delta, 3), 'direction': direction, 'materiality': materiality}, 'current_evidence': current.get('evidence', [])[:3], 'previous_evidence': previous.get('evidence', [])[:3]}
+        return {
+            'overall_delta': {
+                'current': current['sentiment_score'],
+                'previous': previous['sentiment_score'],
+                'delta': round(delta, 3),
+                'direction': direction,
+                'materiality': materiality
+            },
+            'current_evidence': current.get('evidence', [])[:3],
+            'previous_evidence': previous.get('evidence', [])[:3]
+        }
