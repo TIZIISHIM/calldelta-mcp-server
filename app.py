@@ -1,10 +1,7 @@
 
-
 import os
 from datetime import datetime
 from fastmcp import FastMCP
-from ctxprotocol import verify_context_request, is_protected_mcp_method
-from fastapi import Request
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -14,7 +11,7 @@ from huggingface_client import HuggingFaceClient
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Create FastMCP server (includes built-in FastAPI)
+# Create FastMCP server
 mcp = FastMCP("CallDelta MCP Server")
 
 # Define output schemas
@@ -141,6 +138,5 @@ if __name__ == "__main__":
     print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
     print(f"Health check: http://0.0.0.0:{port}/health")
     
-    # Run with SSE transport (fastmcp handles this)
-    # fastmcp automatically creates /sse endpoint
+    # Run with SSE transport
     mcp.run(transport="sse", host="0.0.0.0", port=port)
