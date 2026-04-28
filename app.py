@@ -1,15 +1,11 @@
-"""
-CallDelta MCP Server - Correct Implementation
-Based on ctxprotocol/sdk-python documentation.
-Uses FastAPI + MCP SDK + Context Auth Middleware + HTTP POST endpoint.
-"""
+
 
 import os
 import json
 from datetime import datetime
 from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.responses import JSONResponse
-from ctxprotocol import create_context_middleware
+from fastapi.responses import JSONResponse, Response
+from ctxprotocol import create_context_middleware, is_protected_mcp_method
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -18,7 +14,7 @@ from huggingface_client import HuggingFaceClient
 # Initialize FastAPI app
 app = FastAPI(title="CallDelta MCP Server")
 
-# Create Context auth middleware (verifies JWT for tools/call)
+# Create Context auth middleware
 verify_context = create_context_middleware(
     audience="https://calldelta-mcp-server-production.up.railway.app"
 )
@@ -27,7 +23,7 @@ verify_context = create_context_middleware(
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Define tools with outputSchema and _meta (required by Context)
+# Define tools with outputSchema and _meta
 AVAILABLE_TOOLS = [
     {
         "name": "compare_earnings_calls",
@@ -87,7 +83,7 @@ async def root():
     return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
-        "version": "14.0.0",
+        "version": "15.0.0",
         "features": ["http_post_endpoint", "outputSchema", "_meta", "context_auth_middleware"],
         "tools": [t["name"] for t in AVAILABLE_TOOLS],
         "timestamp": datetime.now().isoformat()
@@ -99,26 +95,44 @@ async def health():
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 
+# GET endpoint for discovery (returns 405 but with info)
+@app.get("/mcp")
+async def mcp_get():
+    """GET is not supported. Use POST for MCP requests."""
+    return JSONResponse(
+        status_code=405,
+        content={
+            "error": "Method Not Allowed",
+            "message": "MCP endpoint accepts POST requests only. Please send JSON-RPC messages via POST.",
+            "supported_methods": ["initialize", "notifications/initialized", "tools/list", "tools/call"]
+        }
+    )
+
+
 @app.post("/mcp")
 async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)):
     """
     MCP endpoint with Context auth middleware.
-    - initialize and tools/list: no auth required (context will be None)
-    - tools/call: requires valid JWT (context contains verified payload)
+    Handles JSON-RPC messages properly.
     """
     try:
         body = await request.json()
     except Exception as e:
         return JSONResponse(
             status_code=400,
-            content={"jsonrpc": "2.0", "error": {"code": -32700, "message": f"Parse error: {str(e)}"}}
+            content={
+                "jsonrpc": "2.0",
+                "error": {"code": -32700, "message": f"Parse error: {str(e)}"},
+                "id": None
+            }
         )
     
+    # Extract JSON-RPC fields
     method = body.get("method", "")
     msg_id = body.get("id")
+    params = body.get("params", {})
     
     print(f"Received: {method} (id: {msg_id})")
-    print(f"Auth context present: {context is not None}")
     
     # Initialize handshake
     if method == "initialize":
@@ -128,13 +142,13 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "calldelta-mcp-server", "version": "14.0.0"}
+                "serverInfo": {"name": "calldelta-mcp-server", "version": "15.0.0"}
             }
         })
     
     # Initialized notification
     elif method == "notifications/initialized":
-        return JSONResponse(content={}, status_code=202)
+        return Response(status_code=202)
     
     # List tools
     elif method == "tools/list":
@@ -144,10 +158,10 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
             "result": {"tools": AVAILABLE_TOOLS}
         })
     
-    # Call tool (requires auth - middleware already verified)
+    # Call tool
     elif method == "tools/call":
-        tool_name = body.get("params", {}).get("name", "")
-        arguments = body.get("params", {}).get("arguments", {})
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
         
         print(f"Executing tool: {tool_name}")
         
@@ -158,7 +172,11 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
         else:
             return JSONResponse(
                 status_code=400,
-                content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}}
+                content={
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}
+                }
             )
         
         return JSONResponse(content={
@@ -171,7 +189,11 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
     else:
         return JSONResponse(
             status_code=400,
-            content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+            content={
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}"}
+            }
         )
 
 
@@ -186,7 +208,6 @@ async def compare_earnings_calls(args: dict) -> dict:
     if not ticker:
         return {"error": "Ticker is required", "timestamp": datetime.now().isoformat()}
     
-    # Check required fields
     if not all([current_year, current_quarter, previous_year, previous_quarter]):
         return {"error": "Year and quarter fields are required", "timestamp": datetime.now().isoformat()}
     
