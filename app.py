@@ -1,160 +1,151 @@
 
 
 import os
+import asyncio
 import json
 from datetime import datetime
-from typing import Dict, Any
-from mcp.server.fastmcp import FastMCP
-import requests
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
 
-# Initialize fetchers
+# Initialize
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Initialize MCP server
-port = int(os.environ.get("PORT", 8080))
-mcp = FastMCP(
-    name="CallDelta MCP Server",
-    host="0.0.0.0",
-    port=port
-)
+# Create server
+server = Server("calldelta-mcp-server")
 
-# Define outputSchema for compare_earnings_calls
-COMPARE_OUTPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "ticker": {"type": "string"},
-        "current_quarter": {"type": "string"},
-        "previous_quarter": {"type": "string"},
-        "sources": {
+# Define tools with FULL outputSchema and _meta
+TOOLS = [
+    Tool(
+        name="compare_earnings_calls",
+        description="Compare two earnings call transcripts and return sentiment delta with sentence-level evidence.",
+        inputSchema={
             "type": "object",
             "properties": {
-                "current": {"type": "object"},
-                "previous": {"type": "object"}
-            }
+                "ticker": {"type": "string", "description": "Stock ticker symbol"},
+                "current_year": {"type": "integer", "description": "Year of current earnings call"},
+                "current_quarter": {"type": "integer", "description": "Quarter number (1-4)"},
+                "previous_year": {"type": "integer", "description": "Year of previous earnings call"},
+                "previous_quarter": {"type": "integer", "description": "Quarter number (1-4)"}
+            },
+            "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
         },
-        "sentiment_analysis": {
+        outputSchema={
             "type": "object",
             "properties": {
-                "overall_delta": {"type": "object"},
-                "current_evidence": {"type": "array"},
-                "previous_evidence": {"type": "array"},
-                "methodology": {"type": "object"}
+                "ticker": {"type": "string"},
+                "current_quarter": {"type": "string"},
+                "previous_quarter": {"type": "string"},
+                "sources": {"type": "object"},
+                "sentiment_analysis": {"type": "object"},
+                "transparency_note": {"type": "string"},
+                "timestamp": {"type": "string"}
             }
         },
-        "transparency_note": {"type": "string"},
-        "timestamp": {"type": "string"}
-    }
-}
-
-# Define outputSchema for analyze_sentiment
-ANALYZE_OUTPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "analysis": {
-            "type": "object",
-            "properties": {
-                "sentiment_label": {"type": "string"},
-                "sentiment_score": {"type": "number"},
-                "confidence": {"type": "number"},
-                "evidence": {"type": "array"},
-                "sentence_count": {"type": "integer"}
-            }
-        },
-        "text_preview": {"type": "string"},
-        "transparency_note": {"type": "string"},
-        "timestamp": {"type": "string"}
-    }
-}
-
-
-@mcp.tool(
-    name="compare_earnings_calls",
-    description="Compare two earnings call transcripts and return sentiment delta with sentence-level evidence. Use for NVDA, TSLA, AAPL, MSFT, META, AMD earnings sentiment comparison.",
-    outputSchema=COMPARE_OUTPUT_SCHEMA,
-    _meta={
-        "surface": "query",
-        "queryEligible": True,
-        "contextRequirements": [],
-        "rateLimit": {
-            "maxRequestsPerMinute": 30,
-            "cooldownMs": 2000
+        _meta={
+            "surface": "query",
+            "queryEligible": True
         }
-    }
-)
-def compare_earnings_calls(
-    ticker: str,
-    current_year: int,
-    current_quarter: int,
-    previous_year: int,
-    previous_quarter: int
-) -> Dict[str, Any]:
-    """Compare two earnings calls and return sentiment delta."""
-    ticker = ticker.upper()
-    
-    current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
-    if current.get('status') == 'error':
-        return current
-    
-    previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
-    if previous.get('status') == 'error':
-        return previous
-    
-    comparison = sentiment_client.compare_with_evidence(
-        current.get('content', ''),
-        previous.get('content', '')
+    ),
+    Tool(
+        name="analyze_sentiment",
+        description="Analyze sentiment of earnings call text with sentence-level evidence.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to analyze"}
+            },
+            "required": ["text"]
+        },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "analysis": {"type": "object"},
+                "transparency_note": {"type": "string"},
+                "timestamp": {"type": "string"}
+            }
+        },
+        _meta={
+            "surface": "query",
+            "queryEligible": True
+        }
     )
+]
+
+
+@server.list_tools()
+async def handle_list_tools():
+    """Return the list of tools."""
+    return TOOLS
+
+
+@server.call_tool()
+async def handle_call_tool(name: str, arguments: dict):
+    """Handle tool execution."""
     
-    return {
-        "ticker": ticker,
-        "current_quarter": f"Q{current_quarter} {current_year}",
-        "previous_quarter": f"Q{previous_quarter} {previous_year}",
-        "sources": {
-            "current": {"source": current.get('source_used', 'Unknown'), "url": current.get('url', '')},
-            "previous": {"source": previous.get('source_used', 'Unknown'), "url": previous.get('url', '')}
-        },
-        "sentiment_analysis": comparison,
-        "transparency_note": "All sentiment claims are backed by exact sentence-level evidence.",
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@mcp.tool(
-    name="analyze_sentiment",
-    description="Analyze sentiment of earnings call text, financial text, or any qualitative passage. Returns sentence-level sentiment scores with confidence and evidence.",
-    outputSchema=ANALYZE_OUTPUT_SCHEMA,
-    _meta={
-        "surface": "query",
-        "queryEligible": True,
-        "contextRequirements": [],
-        "rateLimit": {
-            "maxRequestsPerMinute": 60,
-            "cooldownMs": 1000
-        }
-    }
-)
-def analyze_sentiment(text: str) -> Dict[str, Any]:
-    """Analyze sentiment of a single text passage."""
-    if not text or len(text) < 20:
-        return {
-            "error": "Text must be at least 20 characters",
+    if name == "compare_earnings_calls":
+        ticker = arguments.get("ticker", "").upper()
+        current_year = arguments.get("current_year")
+        current_quarter = arguments.get("current_quarter")
+        previous_year = arguments.get("previous_year")
+        previous_quarter = arguments.get("previous_quarter")
+        
+        # Fetch transcripts
+        current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
+        if current.get('status') == 'error':
+            return [TextContent(type="text", text=json.dumps({"error": "Failed to fetch current transcript", "details": current}))]
+        
+        previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
+        if previous.get('status') == 'error':
+            return [TextContent(type="text", text=json.dumps({"error": "Failed to fetch previous transcript", "details": previous}))]
+        
+        # Compare sentiment
+        comparison = sentiment_client.compare_with_evidence(
+            current.get('content', ''),
+            previous.get('content', '')
+        )
+        
+        result = {
+            "ticker": ticker,
+            "current_quarter": f"Q{current_quarter} {current_year}",
+            "previous_quarter": f"Q{previous_quarter} {previous_year}",
+            "sources": {
+                "current": {"source": current.get('source_used', 'Unknown')},
+                "previous": {"source": previous.get('source_used', 'Unknown')}
+            },
+            "sentiment_analysis": comparison,
+            "transparency_note": "All claims backed by sentence-level evidence.",
             "timestamp": datetime.now().isoformat()
         }
+        
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
     
-    result = sentiment_client.analyze_sentiment_with_evidence(text)
+    elif name == "analyze_sentiment":
+        text = arguments.get("text", "")
+        if len(text) < 20:
+            return [TextContent(type="text", text=json.dumps({"error": "Text must be at least 20 characters"}))]
+        
+        result = sentiment_client.analyze_sentiment_with_evidence(text)
+        output = {
+            "analysis": result,
+            "transparency_note": "Sentence-level evidence provided.",
+            "timestamp": datetime.now().isoformat()
+        }
+        return [TextContent(type="text", text=json.dumps(output, indent=2))]
     
-    return {
-        "analysis": result,
-        "text_preview": text[:300] + "..." if len(text) > 300 else text,
-        "transparency_note": "Each sentence analyzed individually with evidence.",
-        "timestamp": datetime.now().isoformat()
-    }
+    else:
+        return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+
+
+async def main():
+    """Run the server."""
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 if __name__ == "__main__":
-    print(f"Starting CallDelta MCP Server on port {port}")
-    print(f"Features: FMP API, real sentiment, outputSchema, _meta, auth ready")
-    mcp.run(transport="sse")
+    asyncio.run(main())
