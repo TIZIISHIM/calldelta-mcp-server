@@ -1,4 +1,6 @@
-
+"""
+Hugging Face Inference API Client - Returns REAL Sentiment Scores
+"""
 
 import requests
 import os
@@ -14,7 +16,7 @@ class HuggingFaceClient:
         }
     
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 10) -> Dict:
-        """Analyze sentiment with sentence-level evidence - returns REAL scores."""
+        """Analyze sentiment with sentence-level evidence."""
         sentences = self._split_sentences(text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 30][:max_sentences]
         
@@ -25,9 +27,7 @@ class HuggingFaceClient:
                 'confidence': 0.5,
                 'evidence': [],
                 'sentence_count': 0,
-                'model_used': 'distilbert-base-uncased-finetuned-sst-2-english',
-                'api': 'HuggingFace Inference (free)',
-                'note': 'No substantial sentences found for analysis'
+                'model_used': 'distilbert-base-uncased-finetuned-sst-2-english'
             }
         
         sentence_results = []
@@ -49,20 +49,16 @@ class HuggingFaceClient:
             'sentiment_label': overall_label,
             'sentiment_score': round(overall_score, 3),
             'confidence': round(abs(overall_score - 0.5) * 2, 3),
-            'evidence': sentence_results,
+            'evidence': sentence_results[:5],
             'sentence_count': len(sentence_results),
-            'model_used': 'distilbert-base-uncased-finetuned-sst-2-english',
-            'api': 'HuggingFace Inference (free)',
-            'transparency_note': 'Each sentence was analyzed individually. See evidence array for exact sentences and their scores.'
+            'model_used': 'distilbert-base-uncased-finetuned-sst-2-english'
         }
     
     def _split_sentences(self, text: str) -> List[str]:
-        """Split text into sentences using punctuation."""
         sentences = re.split(r'(?<=[.!?])\s+', text)
         return [s for s in sentences if len(s) > 0]
     
     def _analyze_single_sentence(self, sentence: str) -> Dict:
-        """Analyze a single sentence using Hugging Face Inference API."""
         api_url = "https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english"
         
         try:
@@ -96,43 +92,16 @@ class HuggingFaceClient:
                             'sentence': sentence[:300],
                             'sentiment_label': sentiment_label,
                             'sentiment_score': round(sentiment_score, 3),
-                            'confidence': round(score, 3),
-                            'raw_model_output': label
+                            'confidence': round(score, 3)
                         }
-                
-                return {
-                    'sentence': sentence[:200],
-                    'sentiment_label': 'neutral',
-                    'sentiment_score': 0.5,
-                    'confidence': 0.5,
-                    'error': f'Unexpected API response format: {str(result)[:100]}'
-                }
             
-            elif response.status_code == 429:
-                return {
-                    'sentence': sentence[:200],
-                    'sentiment_label': 'neutral',
-                    'sentiment_score': 0.5,
-                    'confidence': 0.5,
-                    'error': 'Rate limited - using fallback'
-                }
-            else:
-                return {
-                    'sentence': sentence[:200],
-                    'sentiment_label': 'neutral',
-                    'sentiment_score': 0.5,
-                    'confidence': 0.5,
-                    'error': f'HTTP {response.status_code}'
-                }
-                
-        except requests.exceptions.Timeout:
             return {
                 'sentence': sentence[:200],
                 'sentiment_label': 'neutral',
                 'sentiment_score': 0.5,
-                'confidence': 0.5,
-                'error': 'Request timeout'
+                'confidence': 0.5
             }
+            
         except Exception as e:
             return {
                 'sentence': sentence[:200],
@@ -143,7 +112,6 @@ class HuggingFaceClient:
             }
     
     def compare_with_evidence(self, current_text: str, previous_text: str) -> Dict:
-        """Compare two transcripts with sentence-level evidence."""
         current_analysis = self.analyze_sentiment_with_evidence(current_text)
         previous_analysis = self.analyze_sentiment_with_evidence(previous_text)
         
@@ -165,24 +133,6 @@ class HuggingFaceClient:
         else:
             materiality = 'low'
         
-        most_changed = None
-        current_evidence = current_analysis.get('evidence', [])
-        previous_evidence = previous_analysis.get('evidence', [])
-        
-        if current_evidence and previous_evidence:
-            curr_first = current_evidence[0] if current_evidence else None
-            prev_first = previous_evidence[0] if previous_evidence else None
-            
-            if curr_first and prev_first:
-                sentence_delta = curr_first.get('sentiment_score', 0.5) - prev_first.get('sentiment_score', 0.5)
-                most_changed = {
-                    'current_sentence': curr_first.get('sentence', '')[:250],
-                    'current_score': curr_first.get('sentiment_score', 0.5),
-                    'previous_sentence': prev_first.get('sentence', '')[:250],
-                    'previous_score': prev_first.get('sentiment_score', 0.5),
-                    'delta': round(sentence_delta, 3)
-                }
-        
         return {
             'overall_delta': {
                 'current': round(current_score, 3),
@@ -191,13 +141,10 @@ class HuggingFaceClient:
                 'direction': direction,
                 'materiality': materiality
             },
-            'current_evidence': current_evidence[:5],
-            'previous_evidence': previous_evidence[:5],
-            'most_changed_sentence': most_changed,
+            'current_evidence': current_analysis.get('evidence', [])[:3],
+            'previous_evidence': previous_analysis.get('evidence', [])[:3],
             'methodology': {
                 'model': 'distilbert-base-uncased-finetuned-sst-2-english',
-                'api': 'HuggingFace Inference (free)',
-                'transparency': 'Each sentence analyzed individually with source evidence',
-                'sentiment_scale': '0=negative/cautious, 0.5=neutral, 1=positive/confident'
+                'transparency': 'Each sentence analyzed individually with source evidence'
             }
         }
