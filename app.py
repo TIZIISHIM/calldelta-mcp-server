@@ -2,10 +2,11 @@
 
 import os
 import json
+import asyncio
 from datetime import datetime
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
-from ctxprotocol import create_context_middleware, is_protected_mcp_method
+from sse_starlette.sse import EventSourceResponse
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -14,16 +15,14 @@ from huggingface_client import HuggingFaceClient
 # Initialize FastAPI app
 app = FastAPI(title="CallDelta MCP Server")
 
-# Create Context auth middleware
-verify_context = create_context_middleware(
-    audience="https://calldelta-mcp-server-production.up.railway.app"
-)
-
 # Initialize fetchers
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Define tools with outputSchema and _meta
+# Store active sessions
+sessions = {}
+
+# Define tools
 AVAILABLE_TOOLS = [
     {
         "name": "compare_earnings_calls",
@@ -31,11 +30,11 @@ AVAILABLE_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "ticker": {"type": "string", "description": "Stock ticker symbol (e.g., NVDA, TSLA, AAPL, MSFT)"},
-                "current_year": {"type": "integer", "description": "Year of current earnings call"},
-                "current_quarter": {"type": "integer", "description": "Quarter number (1-4)"},
-                "previous_year": {"type": "integer", "description": "Year of previous earnings call"},
-                "previous_quarter": {"type": "integer", "description": "Quarter number (1-4)"}
+                "ticker": {"type": "string"},
+                "current_year": {"type": "integer"},
+                "current_quarter": {"type": "integer"},
+                "previous_year": {"type": "integer"},
+                "previous_quarter": {"type": "integer"}
             },
             "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
         },
@@ -48,7 +47,6 @@ AVAILABLE_TOOLS = [
                 "sources": {"type": "object"},
                 "sentiment_analysis": {"type": "object"},
                 "transparency_note": {"type": "string"},
-                "error": {"type": "string"},
                 "timestamp": {"type": "string"}
             }
         },
@@ -60,7 +58,7 @@ AVAILABLE_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Text to analyze for sentiment"}
+                "text": {"type": "string"}
             },
             "required": ["text"]
         },
@@ -69,7 +67,6 @@ AVAILABLE_TOOLS = [
             "properties": {
                 "analysis": {"type": "object"},
                 "transparency_note": {"type": "string"},
-                "error": {"type": "string"},
                 "timestamp": {"type": "string"}
             }
         },
@@ -83,56 +80,58 @@ async def root():
     return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
-        "version": "15.0.0",
-        "features": ["http_post_endpoint", "outputSchema", "_meta", "context_auth_middleware"],
-        "tools": [t["name"] for t in AVAILABLE_TOOLS],
+        "version": "16.0.0",
         "timestamp": datetime.now().isoformat()
     }
 
 
 @app.get("/health")
 async def health():
+    """Health check endpoint - required by Railway."""
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 
-# GET endpoint for discovery (returns 405 but with info)
-@app.get("/mcp")
-async def mcp_get():
-    """GET is not supported. Use POST for MCP requests."""
-    return JSONResponse(
-        status_code=405,
-        content={
-            "error": "Method Not Allowed",
-            "message": "MCP endpoint accepts POST requests only. Please send JSON-RPC messages via POST.",
-            "supported_methods": ["initialize", "notifications/initialized", "tools/list", "tools/call"]
+@app.get("/sse")
+async def sse_endpoint(request: Request):
+    """SSE endpoint for MCP - Context connects here first."""
+    session_id = os.urandom(16).hex()
+    sessions[session_id] = {"messages": []}
+    
+    async def event_generator():
+        # Send the endpoint event with the session-specific message URL
+        yield {
+            "event": "endpoint",
+            "data": f"/messages?session_id={session_id}"
         }
-    )
+        
+        # Keep connection alive
+        while True:
+            await asyncio.sleep(30)
+            yield {"event": "ping", "data": ""}
+            if await request.is_disconnected():
+                break
+    
+    return EventSourceResponse(event_generator())
 
 
-@app.post("/mcp")
-async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)):
-    """
-    MCP endpoint with Context auth middleware.
-    Handles JSON-RPC messages properly.
-    """
+@app.post("/messages")
+async def messages_endpoint(request: Request):
+    """MCP message endpoint - receives JSON-RPC from Context."""
+    session_id = request.query_params.get("session_id")
+    
     try:
         body = await request.json()
     except Exception as e:
         return JSONResponse(
             status_code=400,
-            content={
-                "jsonrpc": "2.0",
-                "error": {"code": -32700, "message": f"Parse error: {str(e)}"},
-                "id": None
-            }
+            content={"jsonrpc": "2.0", "error": {"code": -32700, "message": f"Parse error: {str(e)}"}}
         )
     
-    # Extract JSON-RPC fields
     method = body.get("method", "")
     msg_id = body.get("id")
     params = body.get("params", {})
     
-    print(f"Received: {method} (id: {msg_id})")
+    print(f"Received: {method} (id: {msg_id}, session: {session_id})")
     
     # Initialize handshake
     if method == "initialize":
@@ -142,7 +141,7 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "calldelta-mcp-server", "version": "15.0.0"}
+                "serverInfo": {"name": "calldelta-mcp-server", "version": "16.0.0"}
             }
         })
     
@@ -172,11 +171,7 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
         else:
             return JSONResponse(
                 status_code=400,
-                content={
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}
-                }
+                content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}}
             )
         
         return JSONResponse(content={
@@ -189,11 +184,7 @@ async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)
     else:
         return JSONResponse(
             status_code=400,
-            content={
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {"code": -32601, "message": f"Method not found: {method}"}
-            }
+            content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
         )
 
 
@@ -208,29 +199,14 @@ async def compare_earnings_calls(args: dict) -> dict:
     if not ticker:
         return {"error": "Ticker is required", "timestamp": datetime.now().isoformat()}
     
-    if not all([current_year, current_quarter, previous_year, previous_quarter]):
-        return {"error": "Year and quarter fields are required", "timestamp": datetime.now().isoformat()}
-    
-    # Fetch transcripts
     current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
     if current.get('status') == 'error':
-        return {
-            "error": f"Failed to fetch transcript for {ticker} Q{current_quarter} {current_year}",
-            "details": current,
-            "suggestion": "Try a different ticker or quarter. Example: NVDA Q3 2024 vs Q2 2024",
-            "timestamp": datetime.now().isoformat()
-        }
+        return {"error": f"Failed to fetch transcript for {ticker} Q{current_quarter} {current_year}", "details": current, "timestamp": datetime.now().isoformat()}
     
     previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
     if previous.get('status') == 'error':
-        return {
-            "error": f"Failed to fetch transcript for {ticker} Q{previous_quarter} {previous_year}",
-            "details": previous,
-            "suggestion": "Try a different ticker or quarter. Example: NVDA Q2 2024",
-            "timestamp": datetime.now().isoformat()
-        }
+        return {"error": f"Failed to fetch transcript for {ticker} Q{previous_quarter} {previous_year}", "details": previous, "timestamp": datetime.now().isoformat()}
     
-    # Compare sentiment
     comparison = sentiment_client.compare_with_evidence(
         current.get('content', ''),
         previous.get('content', '')
@@ -245,7 +221,7 @@ async def compare_earnings_calls(args: dict) -> dict:
             "previous": {"source": previous.get('source_used', 'Unknown')}
         },
         "sentiment_analysis": comparison,
-        "transparency_note": "All sentiment claims are backed by exact sentence-level evidence.",
+        "transparency_note": "All claims backed by sentence-level evidence.",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -254,16 +230,12 @@ async def analyze_sentiment(args: dict) -> dict:
     """Analyze sentiment of a single text."""
     text = args.get("text", "")
     if len(text) < 20:
-        return {
-            "error": "Text must be at least 20 characters",
-            "suggestion": "Provide an earnings call transcript excerpt or any financial text to analyze",
-            "timestamp": datetime.now().isoformat()
-        }
+        return {"error": "Text must be at least 20 characters", "timestamp": datetime.now().isoformat()}
     
     result = sentiment_client.analyze_sentiment_with_evidence(text)
     return {
         "analysis": result,
-        "transparency_note": "Sentiment analysis performed with sentence-level evidence. Each sentence shows its individual score.",
+        "transparency_note": "Sentence-level evidence provided.",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -271,7 +243,7 @@ async def analyze_sentiment(args: dict) -> dict:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
-    print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
+    print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
+    print(f"Messages endpoint: http://0.0.0.0:{port}/messages")
     print(f"Health check: http://0.0.0.0:{port}/health")
-    print("Features: HTTP POST endpoint, outputSchema, _meta, Context auth middleware")
     uvicorn.run(app, host="0.0.0.0", port=port)
