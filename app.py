@@ -1,4 +1,6 @@
-
+"""
+CallDelta MCP Server - Working SSE Version with /mcp fallback
+"""
 
 import os
 import json
@@ -186,6 +188,85 @@ async def messages_endpoint(request: Request):
             status_code=400,
             content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
         )
+
+
+# Add /mcp endpoint as fallback for requests that go there
+@app.post("/mcp")
+async def mcp_fallback(request: Request):
+    """Fallback endpoint for /mcp requests - redirect to message handling."""
+    print("Request received on /mcp fallback")
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"jsonrpc": "2.0", "error": {"code": -32700, "message": f"Parse error: {str(e)}"}}
+        )
+    
+    # Create a fake session ID for this request
+    session_id = "fallback"
+    
+    method = body.get("method", "")
+    msg_id = body.get("id")
+    params = body.get("params", {})
+    
+    print(f"Received on /mcp: {method} (id: {msg_id})")
+    
+    # Handle initialize
+    if method == "initialize":
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "calldelta-mcp-server", "version": "16.0.0"}
+            }
+        })
+    
+    # Handle tools/list
+    elif method == "tools/list":
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {"tools": AVAILABLE_TOOLS}
+        })
+    
+    # Handle tools/call
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        
+        if tool_name == "compare_earnings_calls":
+            result = await compare_earnings_calls(arguments)
+        elif tool_name == "analyze_sentiment":
+            result = await analyze_sentiment(arguments)
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}}
+            )
+        
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+        })
+    
+    else:
+        return JSONResponse(
+            status_code=400,
+            content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+        )
+
+
+@app.get("/mcp")
+async def mcp_get_fallback():
+    """GET handler for /mcp."""
+    return JSONResponse(
+        status_code=405,
+        content={"error": "Method Not Allowed", "message": "Use POST for MCP requests"}
+    )
 
 
 async def compare_earnings_calls(args: dict) -> dict:
