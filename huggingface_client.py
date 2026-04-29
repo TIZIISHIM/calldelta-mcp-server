@@ -1,7 +1,7 @@
 import requests
 import os
 import re
-from typing import Dict, List
+from typing import Dict
 
 class HuggingFaceClient:
     def __init__(self):
@@ -33,23 +33,36 @@ class HuggingFaceClient:
         }
     
     def _analyze_sentence(self, sentence: str) -> Dict:
-        api_url = "https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english"
+        # FIXED: Using FinBERT (finance-optimized model) instead of SST-2 (movie reviews)
+        api_url = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+        
         try:
             response = requests.post(api_url, headers=self.headers, json={"inputs": sentence[:500]}, timeout=15)
             if response.status_code == 200:
                 result = response.json()
-                if result and len(result) > 0 and 'label' in result[0]:
-                    label = result[0]['label']
+                if result and len(result) > 0:
+                    # FinBERT returns: [{'label': 'positive', 'score': 0.95}, ...]
+                    # Or sometimes: [{'label': 'POSITIVE', 'score': 0.95}]
+                    label = result[0]['label'].lower()
                     score = result[0]['score']
-                    sentiment_score = score if label == 'POSITIVE' else 1 - score
+                    
+                    # Convert to sentiment_score (0-1 scale where 0.5 is neutral)
+                    if label == 'positive':
+                        sentiment_score = score
+                    elif label == 'negative':
+                        sentiment_score = 1 - score
+                    else:  # neutral
+                        sentiment_score = 0.5
+                    
                     return {
                         'sentence': sentence[:300],
-                        'sentiment_label': 'positive' if label == 'POSITIVE' else 'negative',
+                        'sentiment_label': label,
                         'sentiment_score': round(sentiment_score, 3),
                         'confidence': round(score, 3)
                     }
             return {'sentence': sentence[:200], 'sentiment_label': 'neutral', 'sentiment_score': 0.5, 'confidence': 0.5}
-        except:
+        except Exception as e:
+            print(f"FinBERT API error: {str(e)}")
             return {'sentence': sentence[:200], 'sentiment_label': 'neutral', 'sentiment_score': 0.5, 'confidence': 0.5}
     
     def compare_with_evidence(self, current_text: str, previous_text: str) -> Dict:
