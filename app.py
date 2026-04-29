@@ -24,7 +24,7 @@ sessions = {}
 # Get audience URL from environment variable
 AUDIENCE_URL = os.environ.get("AUDIENCE_URL", "https://calldelta-mcp-server-production.up.railway.app")
 
-# Define tools with outputSchema and _meta
+# Define tools with execute mode enabled
 AVAILABLE_TOOLS = [
     {
         "name": "compare_earnings_calls",
@@ -52,7 +52,11 @@ AVAILABLE_TOOLS = [
                 "timestamp": {"type": "string"}
             }
         },
-        "_meta": {"surface": "query", "queryEligible": True}
+        "_meta": {
+            "surface": "execute",
+            "queryEligible": False,
+            "executeEligible": True
+        }
     },
     {
         "name": "analyze_sentiment",
@@ -72,7 +76,11 @@ AVAILABLE_TOOLS = [
                 "timestamp": {"type": "string"}
             }
         },
-        "_meta": {"surface": "query", "queryEligible": True}
+        "_meta": {
+            "surface": "execute",
+            "queryEligible": False,
+            "executeEligible": True
+        }
     }
 ]
 
@@ -89,24 +97,20 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint - required by Railway."""
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 
 @app.get("/sse")
 async def sse_endpoint(request: Request):
-    """SSE endpoint for MCP - Context connects here first."""
     session_id = os.urandom(16).hex()
     sessions[session_id] = {"messages": []}
     
     async def event_generator():
-        # Send the endpoint event with the session-specific message URL
         yield {
             "event": "endpoint",
             "data": f"/messages?session_id={session_id}"
         }
         
-        # Keep connection alive
         while True:
             await asyncio.sleep(30)
             yield {"event": "ping", "data": ""}
@@ -118,13 +122,11 @@ async def sse_endpoint(request: Request):
 
 @app.post("/messages")
 async def messages_endpoint(request: Request):
-    """MCP message endpoint - receives JSON-RPC from Context."""
     session_id = request.query_params.get("session_id")
     
     try:
         body = await request.json()
-        # DEBUG LOGGING
-        print(f" MESSAGES - Method: {body.get('method')}, ID: {body.get('id')}, Session: {session_id}")
+        print(f"Messages endpoint - Method: {body.get('method')}, ID: {body.get('id')}, Session: {session_id}")
     except Exception as e:
         return JSONResponse(
             status_code=400,
@@ -135,7 +137,6 @@ async def messages_endpoint(request: Request):
     msg_id = body.get("id")
     params = body.get("params", {})
     
-    # Initialize handshake (no auth required)
     if method == "initialize":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -147,11 +148,9 @@ async def messages_endpoint(request: Request):
             }
         })
     
-    # Initialized notification (no auth required)
     elif method == "notifications/initialized":
         return Response(status_code=202)
     
-    # List tools (no auth required - open discovery)
     elif method == "tools/list":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -159,18 +158,16 @@ async def messages_endpoint(request: Request):
             "result": {"tools": AVAILABLE_TOOLS}
         })
     
-    # Call tool (REQUIRES AUTH)
     elif method == "tools/call":
-        # Verify Context auth
         auth_header = request.headers.get("authorization", "")
         try:
             payload = await verify_context_request(
                 authorization_header=auth_header,
                 audience=AUDIENCE_URL
             )
-            print(f" Auth successful for tool call: {payload.get('sub', 'unknown')}")
+            print(f"Auth successful for tool call: {payload.get('sub', 'unknown')}")
         except Exception as auth_error:
-            print(f" Auth failed: {str(auth_error)}")
+            print(f"Auth failed: {str(auth_error)}")
             return JSONResponse(
                 status_code=401,
                 content={
@@ -183,8 +180,8 @@ async def messages_endpoint(request: Request):
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
         
-        print(f" Executing tool: {tool_name}")
-        print(f" Arguments: {json.dumps(arguments, indent=2)}")
+        print(f"Executing tool: {tool_name}")
+        print(f"Arguments: {json.dumps(arguments, indent=2)}")
         
         if tool_name == "compare_earnings_calls":
             result = await compare_earnings_calls(arguments)
@@ -196,16 +193,15 @@ async def messages_endpoint(request: Request):
                 content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}}
             )
         
-        print(f" Tool execution complete, sending response")
+        print("Tool execution complete, sending response")
         return JSONResponse(content={
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
         })
     
-    # Unknown method
     else:
-        print(f" Unknown method: {method}")
+        print(f"Unknown method: {method}")
         return JSONResponse(
             status_code=400,
             content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
@@ -214,11 +210,9 @@ async def messages_endpoint(request: Request):
 
 @app.post("/mcp")
 async def mcp_fallback(request: Request):
-    """Complete MCP fallback for /mcp requests."""
     try:
         body = await request.json()
-        # DEBUG LOGGING
-        print(f" MCP FALLBACK - Method: {body.get('method')}, ID: {body.get('id')}")
+        print(f"MCP fallback - Method: {body.get('method')}, ID: {body.get('id')}")
     except Exception as e:
         return JSONResponse(
             status_code=400,
@@ -229,7 +223,6 @@ async def mcp_fallback(request: Request):
     msg_id = body.get("id")
     params = body.get("params", {})
     
-    # Initialize handshake
     if method == "initialize":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -241,11 +234,9 @@ async def mcp_fallback(request: Request):
             }
         })
     
-    # Initialized notification
     elif method == "notifications/initialized":
         return Response(status_code=202)
     
-    # List tools
     elif method == "tools/list":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -253,13 +244,12 @@ async def mcp_fallback(request: Request):
             "result": {"tools": AVAILABLE_TOOLS}
         })
     
-    # Call tool - FIXED: Now properly handles tools/call
     elif method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
         
-        print(f" MCP FALLBACK - Executing tool: {tool_name}")
-        print(f" Arguments: {json.dumps(arguments, indent=2)}")
+        print(f"MCP fallback - Executing tool: {tool_name}")
+        print(f"Arguments: {json.dumps(arguments, indent=2)}")
         
         if tool_name == "compare_earnings_calls":
             result = await compare_earnings_calls(arguments)
@@ -271,16 +261,15 @@ async def mcp_fallback(request: Request):
                 content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}}
             )
         
-        print(f" MCP FALLBACK - Tool execution complete")
+        print("MCP fallback - Tool execution complete")
         return JSONResponse(content={
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
         })
     
-    # Unknown method
     else:
-        print(f" MCP FALLBACK - Unknown method: {method}")
+        print(f"MCP fallback - Unknown method: {method}")
         return JSONResponse(
             status_code=400,
             content={"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
@@ -289,7 +278,6 @@ async def mcp_fallback(request: Request):
 
 @app.get("/mcp")
 async def mcp_get_fallback():
-    """GET handler for /mcp."""
     return JSONResponse(
         status_code=405,
         content={"error": "Method Not Allowed", "message": "Use POST for MCP requests"}
@@ -297,7 +285,6 @@ async def mcp_get_fallback():
 
 
 async def compare_earnings_calls(args: dict) -> dict:
-    """Compare two earnings calls."""
     ticker = args.get("ticker", "").upper()
     current_year = args.get("current_year")
     current_quarter = args.get("current_quarter")
@@ -307,7 +294,7 @@ async def compare_earnings_calls(args: dict) -> dict:
     if not ticker:
         return {"error": "Ticker is required", "timestamp": datetime.now().isoformat()}
     
-    print(f" Fetching {ticker} Q{current_quarter} {current_year} and Q{previous_quarter} {previous_year}")
+    print(f"Fetching {ticker} Q{current_quarter} {current_year} and Q{previous_quarter} {previous_year}")
     
     current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
     if current.get('status') == 'error':
@@ -317,7 +304,7 @@ async def compare_earnings_calls(args: dict) -> dict:
     if previous.get('status') == 'error':
         return {"error": f"Failed to fetch transcript for {ticker} Q{previous_quarter} {previous_year}", "details": previous, "timestamp": datetime.now().isoformat()}
     
-    print(f" Comparing transcripts...")
+    print("Comparing transcripts...")
     comparison = sentiment_client.compare_with_evidence(
         current.get('content', ''),
         previous.get('content', '')
@@ -338,7 +325,6 @@ async def compare_earnings_calls(args: dict) -> dict:
 
 
 async def analyze_sentiment(args: dict) -> dict:
-    """Analyze sentiment of a single text."""
     text = args.get("text", "")
     if len(text) < 20:
         return {"error": "Text must be at least 20 characters", "timestamp": datetime.now().isoformat()}
