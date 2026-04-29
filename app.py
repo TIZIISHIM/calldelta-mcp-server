@@ -21,6 +21,9 @@ sentiment_client = HuggingFaceClient()
 # Store active sessions
 sessions = {}
 
+# Get audience URL from environment variable (FIXED: no hardcoded URL)
+AUDIENCE_URL = os.environ.get("AUDIENCE_URL", "https://calldelta-mcp-server-production.up.railway.app")
+
 # Define tools with outputSchema and _meta
 AVAILABLE_TOOLS = [
     {
@@ -158,12 +161,12 @@ async def messages_endpoint(request: Request):
     
     # Call tool (REQUIRES AUTH)
     elif method == "tools/call":
-        # Verify Context auth
+        # Verify Context auth - FIXED: using AUDIENCE_URL from environment variable
         auth_header = request.headers.get("authorization", "")
         try:
             payload = await verify_context_request(
                 authorization_header=auth_header,
-                audience="https://calldelta-mcp-server.up.railway.app"  # Replace with your actual Railway URL
+                audience=AUDIENCE_URL
             )
             print(f"Auth successful for tool call: {payload.get('sub', 'unknown')}")
         except Exception as auth_error:
@@ -246,12 +249,12 @@ async def mcp_fallback(request: Request):
         })
     
     elif method == "tools/call":
-        # Verify Context auth
+        # Verify Context auth - FIXED: using AUDIENCE_URL from environment variable
         auth_header = request.headers.get("authorization", "")
         try:
             payload = await verify_context_request(
                 authorization_header=auth_header,
-                audience="https://calldelta-mcp-server.up.railway.app"  # Replace with your actual Railway URL
+                audience=AUDIENCE_URL
             )
             print(f"Auth successful for tool call: {payload.get('sub', 'unknown')}")
         except Exception as auth_error:
@@ -333,7 +336,7 @@ async def compare_earnings_calls(args: dict) -> dict:
             "previous": {"source": previous.get('source_used', 'Unknown')}
         },
         "sentiment_analysis": comparison,
-        "transparency_note": "All claims backed by sentence-level evidence from actual transcript excerpts.",
+        "transparency_note": "All claims backed by sentence-level evidence from actual transcript excerpts using FinBERT (finance-optimized sentiment model).",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -347,7 +350,7 @@ async def analyze_sentiment(args: dict) -> dict:
     result = sentiment_client.analyze_sentiment_with_evidence(text)
     return {
         "analysis": result,
-        "transparency_note": "Sentence-level evidence provided from actual text analysis.",
+        "transparency_note": "Sentence-level evidence provided using FinBERT (finance-optimized sentiment model).",
         "timestamp": datetime.now().isoformat()
     }
 
