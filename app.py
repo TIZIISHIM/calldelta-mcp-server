@@ -11,27 +11,32 @@ from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
 from ctxprotocol import verify_context_request
 
+# Initialize FastAPI app
 app = FastAPI(title="CallDelta MCP Server")
 
+# Initialize fetchers
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
+# Store active sessions
 sessions = {}
 
+# Get audience URL from environment variable
 AUDIENCE_URL = os.environ.get("AUDIENCE_URL", "https://calldelta-mcp-server-production.up.railway.app")
 
+# Define tools with both modes enabled
 AVAILABLE_TOOLS = [
     {
         "name": "compare_earnings_calls",
-        "description": "Compare two earnings call transcripts and return sentiment delta with sentence-level evidence.",
+        "description": "Use this tool when the user asks to compare earnings call transcripts between two specific quarters (e.g., Q3 vs Q2), determine changes in management tone on topics like revenue, margins, guidance, or competitive risk, or evaluate if management sounds more or less confident. Do not use for single text sentiment analysis.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "ticker": {"type": "string"},
-                "current_year": {"type": "integer"},
-                "current_quarter": {"type": "integer"},
-                "previous_year": {"type": "integer"},
-                "previous_quarter": {"type": "integer"}
+                "ticker": {"type": "string", "description": "Stock ticker symbol (e.g., NVDA, TSLA, AAPL)"},
+                "current_year": {"type": "integer", "description": "Year of the current/most recent quarter"},
+                "current_quarter": {"type": "integer", "description": "Current quarter (1=Q1, 2=Q2, 3=Q3, 4=Q4)"},
+                "previous_year": {"type": "integer", "description": "Year of the previous quarter to compare against"},
+                "previous_quarter": {"type": "integer", "description": "Previous quarter (1=Q1, 2=Q2, 3=Q3, 4=Q4)"}
             },
             "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
         },
@@ -55,11 +60,11 @@ AVAILABLE_TOOLS = [
     },
     {
         "name": "analyze_sentiment",
-        "description": "Analyze sentiment of earnings call text with sentence-level evidence.",
+        "description": "Use this tool to analyze sentiment of a single earnings call excerpt or text snippet. Returns sentence-level evidence with FinBERT (finance-optimized sentiment model). Do not use for quarter-over-quarter comparisons.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string"}
+                "text": {"type": "string", "description": "Text to analyze for sentiment"}
             },
             "required": ["text"]
         },
@@ -93,6 +98,18 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/debug/env")
+async def debug_env():
+    """Debug endpoint to verify environment variables are being read."""
+    fmp_key = os.environ.get("FMP_API_KEY", "")
+    return {
+        "fmp_key_set": bool(fmp_key),
+        "fmp_key_preview": fmp_key[:5] + "..." if fmp_key else "not set",
+        "hf_token_set": bool(os.environ.get("HF_TOKEN", "")),
+        "audience_url": os.environ.get("AUDIENCE_URL", "not set"),
+    }
 
 
 @app.get("/sse")
@@ -144,6 +161,10 @@ async def messages_endpoint(request: Request):
         })
     
     elif method == "notifications/initialized":
+        return Response(status_code=202)
+    
+    elif method == "notifications/cancelled":
+        print(f"Received cancellation for request ID: {params.get('requestId')}")
         return Response(status_code=202)
     
     elif method == "tools/list":
@@ -230,6 +251,10 @@ async def mcp_fallback(request: Request):
         })
     
     elif method == "notifications/initialized":
+        return Response(status_code=202)
+    
+    elif method == "notifications/cancelled":
+        print(f"MCP fallback - Received cancellation for request ID: {params.get('requestId')}")
         return Response(status_code=202)
     
     elif method == "tools/list":
