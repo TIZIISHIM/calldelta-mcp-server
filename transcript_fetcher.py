@@ -7,8 +7,14 @@ class TranscriptFetcher:
     def __init__(self):
         self.fmp_api_key = os.environ.get("FMP_API_KEY", "")
         self.apify_token = os.environ.get("APIFY_TOKEN", "")
-        self.apify_actor_id = "junipr/earnings-call-transcript-scraper"
         self.base_url = "https://financialmodelingprep.com/api/v3"
+        
+        # List of Apify actors to try in order
+        self.apify_actors = [
+            "junipr/earnings-call-transcript-scraper",
+            "lucky-chap/earnings-call-transcript-scraper",
+            "curious-cyril/earnings-transcript-scraper",
+        ]
     
     def fetch_transcript(self, ticker: str, year: int, quarter: int) -> Dict:
         quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
@@ -16,20 +22,30 @@ class TranscriptFetcher:
         
         print(f"Fetching {ticker} {quarter_str} {year}")
         
+        # Source 1: FMP API
         if self.fmp_api_key:
             result = self._fetch_from_fmp(ticker, year, quarter_str)
             if result and result.get('status') == 'success':
                 return result
         
-        if self.apify_token:
-            result = self._fetch_from_apify(ticker, year, quarter)
-            if result and result.get('status') == 'success':
-                return result
+        # Source 2: YFinance (free, no API key)
+        result = self._fetch_from_yfinance(ticker, year, quarter)
+        if result and result.get('status') == 'success':
+            return result
         
+        # Source 3: Apify (try multiple actors)
+        if self.apify_token:
+            for actor_id in self.apify_actors:
+                result = self._fetch_from_apify(ticker, year, quarter, actor_id)
+                if result and result.get('status') == 'success':
+                    return result
+        
+        # All sources failed
         return {
             'status': 'error',
-            'error_code': 'NO_SOURCE_AVAILABLE',
-            'error_message': 'No transcript source available. Set FMP_API_KEY or APIFY_TOKEN environment variable.',
+            'error_code': 'ALL_SOURCES_FAILED',
+            'error_message': f'No transcript available for {ticker} {quarter_str} {year} from any source',
+            'sources_tried': ['FMP', 'YFinance', 'Apify'],
             'timestamp': datetime.now().isoformat()
         }
     
@@ -63,54 +79,91 @@ class TranscriptFetcher:
         
         return None
     
-    def _fetch_from_apify(self, ticker: str, year: int, quarter: int) -> Dict:
+    def _fetch_from_yfinance(self, ticker: str, year: int, quarter: int) -> Dict:
+        try:
+            import yfinance as yf
+            
+            stock = yf.Ticker(ticker)
+            transcripts = stock.earnings_transcript
+            
+            if not transcripts:
+                print(f"YFinance: No transcripts found for {ticker}")
+                return None
+            
+            for transcript in transcripts:
+                if transcript.get('year') == year and transcript.get('quarter') == quarter:
+                    content = transcript.get('content', '')
+                    if content and len(content) > 200:
+                        print(f"YFinance: Found transcript for {ticker} Q{quarter} {year}")
+                        return {
+                            'status': 'success',
+                            'source': 'Yahoo Finance',
+                            'content': content,
+                            'source_used': 'yfinance',
+                            'timestamp': datetime.now().isoformat()
+                        }
+            
+            print(f"YFinance: No matching quarter for {ticker} Q{quarter} {year}")
+            return None
+            
+        except ImportError:
+            print("YFinance: Library not installed. Run: pip install yfinance")
+            return None
+        except Exception as e:
+            print(f"YFinance error: {str(e)}")
+            return None
+    
+    def _fetch_from_apify(self, ticker: str, year: int, quarter: int, actor_id: str) -> Dict:
         try:
             from apify_client import ApifyClient
-        except ImportError:
-            print("Apify client not installed. Run: pip install apify-client")
-            return None
-        
-        quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
-        quarter_str = quarter_map.get(quarter, f'Q{quarter}')
-        
-        client = ApifyClient(self.apify_token)
-        
-        run_input = {
-            "companySymbol": ticker,
-            "quarter": quarter_str,
-            "year": year,
-        }
-        
-        try:
-            print(f"Calling Apify for {ticker} {quarter_str} {year}")
-            run = client.actor(self.apify_actor_id).call(run_input=run_input)
+            
+            quarter_map = {1: 'Q1', 2: 'Q2', 3: 'Q3', 4: 'Q4'}
+            quarter_str = quarter_map.get(quarter, f'Q{quarter}')
+            
+            client = ApifyClient(self.apify_token)
+            
+            run_input = {
+                "tickers": [ticker],
+                "year": year,
+                "quarter": quarter_str,
+                "maxTranscriptsPerCompany": 1
+            }
+            
+            print(f"Apify: Trying actor {actor_id} for {ticker} {quarter_str} {year}")
+            
+            run = client.actor(actor_id).call(run_input=run_input)
             
             if run and run.get('status') == 'SUCCEEDED':
                 dataset_client = client.dataset(run.get('defaultDatasetId'))
                 items = list(dataset_client.iterate_items())
                 
                 if items and len(items) > 0:
-                    content = items[0].get('transcript', '')
+                    item = items[0]
+                    content = item.get('transcript', '')
                     if not content:
-                        content = items[0].get('content', '')
+                        content = item.get('content', '')
                     if not content:
-                        content = items[0].get('text', '')
+                        content = item.get('text', '')
                     
                     if content and len(content) > 200:
+                        print(f"Apify: Found transcript using {actor_id}")
                         return {
                             'status': 'success',
                             'source': 'Apify',
                             'content': content,
-                            'source_used': 'Apify Earnings Call Scraper',
+                            'source_used': f'Apify ({actor_id})',
                             'timestamp': datetime.now().isoformat()
                         }
                     else:
-                        print(f"Apify returned short or empty content: {len(content) if content else 0} chars")
+                        print(f"Apify: Content too short or empty from {actor_id}")
                 else:
-                    print("Apify returned no items in dataset")
+                    print(f"Apify: No items in dataset from {actor_id}")
             else:
-                print(f"Apify run failed with status: {run.get('status') if run else 'no run'}")
+                print(f"Apify: Run failed for {actor_id}")
+                
+        except ImportError:
+            print("Apify: Client not installed. Run: pip install apify-client")
         except Exception as e:
-            print(f"Apify error: {str(e)}")
+            print(f"Apify error for {actor_id}: {str(e)}")
         
         return None
