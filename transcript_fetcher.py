@@ -26,7 +26,12 @@ class TranscriptFetcher:
         # Source 1: Defeat Beta API (free, reliable, has transcripts)
         result = self._fetch_from_defeatbeta(ticker, year, quarter)
         if result and result.get('status') == 'success':
-            return result
+            content = result.get('content', '')
+            if len(content) >= 200:
+                print(f"Defeat Beta: Returning transcript ({len(content)} chars)")
+                return result
+            else:
+                print(f"Defeat Beta: Content too short ({len(content)} chars), trying next source")
         
         # Source 2: FMP API
         if self.fmp_api_key:
@@ -73,10 +78,22 @@ class TranscriptFetcher:
             transcript_df = transcripts.get_transcript(year, quarter)
             
             if transcript_df is not None and len(transcript_df) > 0:
-                content = '\n'.join(transcript_df['content'].tolist())
+                # Combine all content including speaker labels
+                content_parts = []
+                for _, row in transcript_df.iterrows():
+                    speaker = row.get('speaker', '')
+                    paragraph = row.get('content', '')
+                    if speaker and paragraph:
+                        content_parts.append(f"{speaker}: {paragraph}")
+                    elif paragraph:
+                        content_parts.append(paragraph)
                 
-                if content and len(content) > 500:
-                    print(f"Defeat Beta: Found transcript for {ticker} Q{quarter} {year}")
+                content = '\n\n'.join(content_parts)
+                
+                # Lower threshold for Defeat Beta since it returns structured data
+                if content and len(content) > 200:
+                    print(f"Defeat Beta: Found transcript for {ticker} Q{quarter} {year} ({len(content)} chars)")
+                    print(f"Defeat Beta preview: {content[:200]}...")
                     return {
                         'status': 'success',
                         'source': 'Defeat Beta API',
@@ -86,6 +103,8 @@ class TranscriptFetcher:
                     }
                 else:
                     print(f"Defeat Beta: Content too short ({len(content) if content else 0} chars)")
+                    if content:
+                        print(f"Defeat Beta content preview: {content[:200]}")
             else:
                 print(f"Defeat Beta: No transcript data for {ticker} Q{quarter} {year}")
             
