@@ -23,24 +23,29 @@ class TranscriptFetcher:
         
         print(f"Fetching {ticker} {quarter_str} {year}")
         
-        # Source 1: FMP API
+        # Source 1: Defeat Beta API (free, reliable, has transcripts)
+        result = self._fetch_from_defeatbeta(ticker, year, quarter)
+        if result and result.get('status') == 'success':
+            return result
+        
+        # Source 2: FMP API
         if self.fmp_api_key:
             result = self._fetch_from_fmp(ticker, year, quarter_str)
             if result and result.get('status') == 'success':
                 return result
         
-        # Source 2: YFinance (free, no API key)
+        # Source 3: YFinance (free, no API key)
         result = self._fetch_from_yfinance(ticker, year, quarter)
         if result and result.get('status') == 'success':
             return result
         
-        # Source 3: Finnhub
+        # Source 4: Finnhub
         if self.finnhub_key:
             result = self._fetch_from_finnhub(ticker, year, quarter)
             if result and result.get('status') == 'success':
                 return result
         
-        # Source 4: Apify actors
+        # Source 5: Apify actors
         if self.apify_token:
             for actor_id in self.apify_actors:
                 result = self._fetch_from_apify(ticker, year, quarter, actor_id)
@@ -52,9 +57,46 @@ class TranscriptFetcher:
             'status': 'error',
             'error_code': 'ALL_SOURCES_FAILED',
             'error_message': f'No transcript available for {ticker} {quarter_str} {year} from any source',
-            'sources_tried': ['FMP', 'YFinance', 'Finnhub', 'Apify'],
+            'sources_tried': ['DefeatBeta', 'FMP', 'YFinance', 'Finnhub', 'Apify'],
             'timestamp': datetime.now().isoformat()
         }
+    
+    def _fetch_from_defeatbeta(self, ticker: str, year: int, quarter: int) -> Dict:
+        try:
+            from defeatbeta_api.data.ticker import Ticker
+            
+            print(f"Defeat Beta: Fetching {ticker} Q{quarter} {year}")
+            
+            stock = Ticker(ticker)
+            transcripts = stock.earning_call_transcripts()
+            
+            transcript_df = transcripts.get_transcript(year, quarter)
+            
+            if transcript_df is not None and len(transcript_df) > 0:
+                content = '\n'.join(transcript_df['content'].tolist())
+                
+                if content and len(content) > 500:
+                    print(f"Defeat Beta: Found transcript for {ticker} Q{quarter} {year}")
+                    return {
+                        'status': 'success',
+                        'source': 'Defeat Beta API',
+                        'content': content,
+                        'source_used': 'defeatbeta-api',
+                        'timestamp': datetime.now().isoformat()
+                    }
+                else:
+                    print(f"Defeat Beta: Content too short ({len(content) if content else 0} chars)")
+            else:
+                print(f"Defeat Beta: No transcript data for {ticker} Q{quarter} {year}")
+            
+            return None
+            
+        except ImportError:
+            print("Defeat Beta: Library not installed. Run: pip install defeatbeta-api")
+            return None
+        except Exception as e:
+            print(f"Defeat Beta error: {str(e)}")
+            return None
     
     def _fetch_from_fmp(self, ticker: str, year: int, quarter_str: str) -> Dict:
         url = f"{self.base_url}/earning_call_transcript"
@@ -91,7 +133,15 @@ class TranscriptFetcher:
             import yfinance as yf
             
             stock = yf.Ticker(ticker)
-            transcripts = stock.earnings_transcript
+            
+            # Try multiple possible attribute names
+            transcripts = None
+            if hasattr(stock, 'earnings_transcript'):
+                transcripts = stock.earnings_transcript
+            elif hasattr(stock, 'transcripts'):
+                transcripts = stock.transcripts
+            elif hasattr(stock, 'get_earnings_transcript'):
+                transcripts = stock.get_earnings_transcript()
             
             if not transcripts:
                 print(f"YFinance: No transcripts found for {ticker}")
@@ -100,6 +150,11 @@ class TranscriptFetcher:
             for transcript in transcripts:
                 if transcript.get('year') == year and transcript.get('quarter') == quarter:
                     content = transcript.get('content', '')
+                    if not content:
+                        content = transcript.get('transcript', '')
+                    if not content:
+                        content = transcript.get('text', '')
+                    
                     if content and len(content) > 200:
                         print(f"YFinance: Found transcript for {ticker} Q{quarter} {year}")
                         return {
@@ -116,13 +171,15 @@ class TranscriptFetcher:
         except ImportError:
             print("YFinance: Library not installed. Run: pip install yfinance")
             return None
+        except AttributeError as e:
+            print(f"YFinance: Attribute error - {str(e)}")
+            return None
         except Exception as e:
             print(f"YFinance error: {str(e)}")
             return None
     
     def _fetch_from_finnhub(self, ticker: str, year: int, quarter: int) -> Dict:
         try:
-            # Calculate quarter months
             start_month = (quarter - 1) * 3 + 1
             end_month = quarter * 3
             
