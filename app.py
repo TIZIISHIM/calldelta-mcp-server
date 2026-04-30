@@ -115,6 +115,25 @@ async def debug_env():
     }
 
 
+@app.get("/debug/yfinance")
+async def debug_yfinance():
+    """Debug endpoint to test YFinance functionality."""
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker("NVDA")
+        transcripts = ticker.earnings_transcript
+        return {
+            "yfinance_installed": True,
+            "transcripts_found": len(transcripts) if transcripts else 0,
+            "first_transcript": transcripts[0] if transcripts else None,
+            "transcript_keys": list(transcripts[0].keys()) if transcripts and len(transcripts) > 0 else []
+        }
+    except ImportError:
+        return {"yfinance_installed": False, "error": "yfinance not installed. Run: pip install yfinance"}
+    except Exception as e:
+        return {"yfinance_installed": True, "error": str(e)}
+
+
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     session_id = os.urandom(16).hex()
