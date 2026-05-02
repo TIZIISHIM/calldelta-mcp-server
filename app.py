@@ -177,6 +177,29 @@ async def debug_hf_token():
         "token_length": len(token) if token else 0
     }
 
+@app.get("/debug/gradio_status")
+async def debug_gradio_status():
+    """Debug endpoint to check Gradio Space status."""
+    gradio_url = os.environ.get("GRADIO_SPACE_URL", "")
+    if not gradio_url:
+        return {"error": "GRADIO_SPACE_URL not set in environment variables"}
+    
+    try:
+        # Test if the Gradio Space is reachable
+        response = requests.get(f"{gradio_url}/gradio_api/call/sentiment_analysis", timeout=10)
+        return {
+            "gradio_url": gradio_url,
+            "status_code": response.status_code,
+            "reachable": response.status_code < 500
+        }
+    except Exception as e:
+        return {
+            "gradio_url": gradio_url,
+            "reachable": False,
+            "error": str(e)
+        }
+
+
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     session_id = os.urandom(16).hex()
