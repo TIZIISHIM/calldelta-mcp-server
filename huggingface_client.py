@@ -135,7 +135,7 @@ class HuggingFaceClient:
             'weak', 'weakness', 'challenge', 'headwind', 'pressure', 'stress', 'risk',
             'miss', 'missed', 'below', 'reduce', 'reduced', 'cut', 'slash', 'drop', 'dropped',
             'collapsed', 'collapse', 'loss', 'lose', 'uncertain', 'uncertainty',
-            'deteriorate', 'deterioration', 'worse', 'worsening', 'problem'
+            'deteriorate', 'deterioration', 'worse', 'worsening', 'problem', 'collapsing'
         ]
         
         pos_score = sum(1 for word in positive_words if word in sentence_lower)
