@@ -1,27 +1,31 @@
 import requests
 import os
 import re
+import json
 from typing import Dict, List
 
 class HuggingFaceClient:
     def __init__(self):
-        self.hf_token = os.environ.get("HF_TOKEN", "")
+        # API keys and endpoints
+        self.gradio_url = os.environ.get("GRADIO_SPACE_URL", "")
         self.replicate_token = os.environ.get("REPLICATE_API_TOKEN", "")
-        self.gradio_space_url = os.environ.get("GRADIO_SPACE_URL", "")
-        
-        self.hf_headers = {"Authorization": f"Bearer {self.hf_token}"} if self.hf_token else {}
-        
-        # List of HF model URLs to try
-        self.hf_model_urls = [
-            "https://api-inference.huggingface.co/models/ProsusAI/finbert",
-            "https://api-inference.huggingface.co/models/ahmedrachid/FinancialBERT-Sentiment-Analysis",
-            "https://api-inference.huggingface.co/models/mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis",
-        ]
+        self.hf_token = os.environ.get("HF_TOKEN", "")
         
         # Track which source is currently working
-        self.current_source = "huggingface" if self.hf_token else ("replicate" if self.replicate_token else ("gradio" if self.gradio_space_url else "fallback"))
+        self.current_source = self._determine_initial_source()
         
         print(f"Initialized HuggingFaceClient with source: {self.current_source}")
+    
+    def _determine_initial_source(self):
+        """Determine which source to try first"""
+        if self.gradio_url:
+            return "gradio"
+        elif self.replicate_token:
+            return "replicate"
+        elif self.hf_token:
+            return "huggingface"
+        else:
+            return "fallback"
     
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 150) -> Dict:
         # Split into sentences - threshold 15 chars
@@ -59,77 +63,94 @@ class HuggingFaceClient:
         }
         
         if self.current_source == "fallback":
-            response['warning'] = 'Using rule-based fallback. Set HF_TOKEN, REPLICATE_API_TOKEN, or GRADIO_SPACE_URL for better accuracy.'
+            response['warning'] = 'Using rule-based fallback. Set GRADIO_SPACE_URL, REPLICATE_API_TOKEN, or HF_TOKEN for better accuracy.'
         
         return response
     
     def _analyze_sentence(self, sentence: str) -> Dict:
-        # Layer 1: Try Hugging Face API
-        if self.current_source == "huggingface" and self.hf_token:
-            for url in self.hf_model_urls:
-                result = self._call_hf_api(url, sentence)
-                if result:
-                    self.current_source = "huggingface"
-                    return result
-            print("All HF models failed, switching to Replicate")
+        # Try sources in priority order
+        if self.current_source == "gradio":
+            result = self._call_gradio(sentence)
+            if result:
+                return result
+            print("Gradio failed, switching to Replicate")
             self.current_source = "replicate"
         
-        # Layer 2: Try Replicate API
-        if self.current_source == "replicate" and self.replicate_token:
-            result = self._call_replicate_api(sentence)
+        if self.current_source == "replicate":
+            result = self._call_replicate(sentence)
             if result:
-                self.current_source = "replicate"
                 return result
-            print("Replicate failed, switching to Gradio Space")
-            self.current_source = "gradio"
+            print("Replicate failed, switching to Hugging Face")
+            self.current_source = "huggingface"
         
-        # Layer 3: Try Gradio Space API
-        if self.current_source == "gradio" and self.gradio_space_url:
-            result = self._call_gradio_api(sentence)
+        if self.current_source == "huggingface":
+            result = self._call_huggingface(sentence)
             if result:
-                self.current_source = "gradio"
                 return result
-            print("Gradio Space failed, switching to rule-based fallback")
+            print("Hugging Face failed, switching to fallback")
             self.current_source = "fallback"
         
-        # Layer 4: Rule-based fallback
+        # Final fallback
         return self._fallback_sentiment(sentence)
     
-    def _call_hf_api(self, api_url: str, sentence: str) -> Dict:
-        try:
-            response = requests.post(
-                api_url,
-                headers=self.hf_headers,
-                json={"inputs": sentence[:500]},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result and len(result) > 0:
-                    item = result[0] if isinstance(result, list) else result
-                    label = item.get('label', 'neutral').lower()
-                    score = item.get('score', 0.5)
-                    
-                    sentiment_score = score if label == 'positive' else (1 - score if label == 'negative' else 0.5)
-                    return {
-                        'sentence': sentence[:300],
-                        'sentiment_label': label,
-                        'sentiment_score': round(sentiment_score, 3),
-                        'confidence': round(score, 3),
-                        'source': 'hf-api'
-                    }
-            elif response.status_code == 401:
-                print(f"HF API 401: Invalid token at {api_url}")
-            else:
-                print(f"HF API {response.status_code} at {api_url}")
-        except Exception as e:
-            print(f"HF API error: {str(e)}")
+    def _call_gradio(self, sentence: str) -> Dict:
+        if not self.gradio_url:
+            return None
+        
+        endpoints = [
+            f"{self.gradio_url}/api/predict/sentiment_analysis",
+            f"{self.gradio_url}/predict/sentiment_analysis",
+            f"{self.gradio_url}/run/sentiment_analysis",
+            f"{self.gradio_url}/gradio_api/predict/sentiment_analysis",
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                response = requests.post(
+                    endpoint,
+                    json={"data": [sentence[:500]]},
+                    timeout=15,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result and 'data' in result and len(result['data']) > 0:
+                        result_data = result['data'][0]
+                        try:
+                            if isinstance(result_data, str):
+                                sentiment_data = json.loads(result_data)
+                            else:
+                                sentiment_data = result_data
+                            
+                            label = sentiment_data.get('label', 'neutral').lower()
+                            score = sentiment_data.get('score', 0.5)
+                            sentiment_score = sentiment_data.get('sentiment_score', score)
+                            
+                            return {
+                                'sentence': sentence[:300],
+                                'sentiment_label': label,
+                                'sentiment_score': round(sentiment_score, 3),
+                                'confidence': round(score, 3),
+                                'source': 'gradio-space'
+                            }
+                        except:
+                            pass
+            except Exception as e:
+                print(f"Gradio endpoint {endpoint} error: {str(e)}")
+                continue
+        
         return None
     
-    def _call_replicate_api(self, sentence: str) -> Dict:
+    def _call_replicate(self, sentence: str) -> Dict:
+        if not self.replicate_token:
+            return None
+        
         try:
             import replicate
+            
+            # Set the token
+            replicate.client.api_token = self.replicate_token
             
             output = replicate.run(
                 "nateraw/prosusai-finbert:latest",
@@ -140,6 +161,7 @@ class HuggingFaceClient:
                 label = output.get('label', 'neutral').lower()
                 score = output.get('score', 0.5)
                 sentiment_score = score if label == 'positive' else (1 - score if label == 'negative' else 0.5)
+                
                 return {
                     'sentence': sentence[:300],
                     'sentiment_label': label,
@@ -150,82 +172,52 @@ class HuggingFaceClient:
         except ImportError:
             print("Replicate library not installed. Run: pip install replicate")
         except Exception as e:
-            print(f"Replicate API error: {str(e)}")
+            print(f"Replicate error: {str(e)}")
+        
         return None
     
-def _call_gradio_api(self, sentence: str) -> Dict:
-    try:
-        # Try the correct Gradio API endpoint format
-        api_url = f"{self.gradio_space_url}/api/predict/sentiment_analysis"
+    def _call_huggingface(self, sentence: str) -> Dict:
+        if not self.hf_token:
+            return None
         
-        response = requests.post(
-            api_url,
-            json={"data": [sentence[:500]]},
-            timeout=30,
-            headers={"Content-Type": "application/json"}
-        )
+        headers = {"Authorization": f"Bearer {self.hf_token}"}
         
-        if response.status_code == 200:
-            result = response.json()
-            if result and 'data' in result:
-                result_data = result['data']
-                if result_data and len(result_data) > 0:
-                    # The result might be a JSON string or a direct value
-                    sentiment_str = result_data[0]
-                    try:
-                        sentiment_data = json.loads(sentiment_str)
-                    except:
-                        # If not JSON, it might be just the label
-                        sentiment_data = {"label": sentiment_str, "score": 0.8, "sentiment_score": 0.8}
-                    
-                    label = sentiment_data.get('label', 'neutral').lower()
-                    score = sentiment_data.get('score', 0.5)
-                    sentiment_score = sentiment_data.get('sentiment_score', score)
-                    return {
-                        'sentence': sentence[:300],
-                        'sentiment_label': label,
-                        'sentiment_score': round(sentiment_score, 3),
-                        'confidence': round(score, 3),
-                        'source': 'gradio-space'
-                    }
-    except Exception as e:
-        print(f"Gradio API error: {str(e)}")
-    
-    # Try alternative endpoint format
-    try:
-        api_url = f"{self.gradio_space_url}/gradio_api/predict/sentiment_analysis"
-        response = requests.post(
-            api_url,
-            json={"data": [sentence[:500]]},
-            timeout=30,
-            headers={"Content-Type": "application/json"}
-        )
+        # List of models to try
+        models = [
+            "https://api-inference.huggingface.co/models/ProsusAI/finbert",
+            "https://api-inference.huggingface.co/models/ahmedrachid/FinancialBERT-Sentiment-Analysis",
+            "https://api-inference.huggingface.co/models/mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis",
+        ]
         
-        if response.status_code == 200:
-            result = response.json()
-            if result and 'data' in result:
-                result_data = result['data']
-                if result_data and len(result_data) > 0:
-                    sentiment_str = result_data[0]
-                    try:
-                        sentiment_data = json.loads(sentiment_str)
-                    except:
-                        sentiment_data = {"label": sentiment_str, "score": 0.8, "sentiment_score": 0.8}
-                    
-                    label = sentiment_data.get('label', 'neutral').lower()
-                    score = sentiment_data.get('score', 0.5)
-                    sentiment_score = sentiment_data.get('sentiment_score', score)
-                    return {
-                        'sentence': sentence[:300],
-                        'sentiment_label': label,
-                        'sentiment_score': round(sentiment_score, 3),
-                        'confidence': round(score, 3),
-                        'source': 'gradio-space'
-                    }
-    except Exception as e:
-        print(f"Gradio API alternative error: {str(e)}")
-    
-    return None
+        for model_url in models:
+            try:
+                response = requests.post(
+                    model_url,
+                    headers=headers,
+                    json={"inputs": sentence[:500]},
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result and len(result) > 0:
+                        item = result[0] if isinstance(result, list) else result
+                        label = item.get('label', 'neutral').lower()
+                        score = item.get('score', 0.5)
+                        sentiment_score = score if label == 'positive' else (1 - score if label == 'negative' else 0.5)
+                        
+                        return {
+                            'sentence': sentence[:300],
+                            'sentiment_label': label,
+                            'sentiment_score': round(sentiment_score, 3),
+                            'confidence': round(score, 3),
+                            'source': 'hf-api'
+                        }
+            except Exception as e:
+                print(f"HF model {model_url} error: {str(e)}")
+                continue
+        
+        return None
     
     def _fallback_sentiment(self, sentence: str) -> Dict:
         """Rule-based fallback for when all APIs fail."""
@@ -244,7 +236,7 @@ def _call_gradio_api(self, sentence: str) -> Dict:
             'weak', 'weakness', 'challenge', 'headwind', 'pressure', 'stress', 'risk',
             'miss', 'missed', 'below', 'reduce', 'reduced', 'cut', 'slash', 'drop', 'dropped',
             'collapsed', 'collapse', 'loss', 'lose', 'uncertain', 'uncertainty',
-            'deteriorate', 'deterioration', 'worse', 'worsening', 'problem', 'collapsing'
+            'deteriorate', 'deterioration', 'worse', 'worsening', 'problem', 'collapsing', 'poor'
         ]
         
         pos_score = sum(1 for word in positive_words if word in sentence_lower)
