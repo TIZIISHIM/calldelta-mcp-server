@@ -7,16 +7,30 @@ class HuggingFaceClient:
     def __init__(self):
         self.api_token = os.environ.get("HF_TOKEN", "")
         self.headers = {"Authorization": f"Bearer {self.api_token}" if self.api_token else "", "Content-Type": "application/json"}
+        self.hf_api_failed = False
+        self.fallback_reason = None
+        
+        if not self.api_token:
+            print("WARNING: HF_TOKEN not set. Using rule-based fallback for sentiment analysis.")
+            self.hf_api_failed = True
+            self.fallback_reason = "HF_TOKEN not set in environment variables"
     
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 150) -> Dict:
-        # Split into sentences and filter out very short ones
+        # Split into sentences - threshold lowered to 15 chars (Alex's requirement)
         sentences = re.split(r'(?<=[.!?])\s+', text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 40][:max_sentences]
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 15][:max_sentences]
         
         if not sentences:
-            return {'sentiment_label': 'neutral', 'sentiment_score': 0.5, 'confidence': 0.5, 'evidence': [], 'sentence_count': 0}
+            return {
+                'sentiment_label': 'neutral',
+                'sentiment_score': 0.5,
+                'confidence': 0.0,
+                'evidence': [],
+                'sentence_count': 0,
+                'error': 'No valid sentences found in text (minimum 15 characters)'
+            }
         
-        # Process sentences in batches to avoid overwhelming the API
+        # Process sentences
         sentence_results = []
         batch_size = 20
         
@@ -33,26 +47,33 @@ class HuggingFaceClient:
         else:
             overall_score = 0.5
             
-        label = 'positive' if overall_score > 0.6 else ('negative' if overall_score < 0.4 else 'neutral')
+        label = 'positive' if overall_score > 0.55 else ('negative' if overall_score < 0.45 else 'neutral')
         
-        # Return evidence for all sentences (or top N for response size)
-        return {
+        # Build response with error signal if HF API failed
+        response = {
             'sentiment_label': label,
             'sentiment_score': round(overall_score, 3),
             'confidence': round(abs(overall_score - 0.5) * 2, 3),
-            'evidence': sentence_results[:50],  # Limit evidence in response to 50 sentences
+            'evidence': sentence_results[:50],
             'sentence_count': len(sentence_results)
         }
+        
+        # Add error signal if fallback was used (Alex's requirement #2)
+        if self.hf_api_failed:
+            response['warning'] = f"Sentiment analysis using rule-based fallback. Reason: {self.fallback_reason}. For full FinBERT accuracy, set HF_TOKEN environment variable."
+        
+        return response
     
     def _analyze_sentence(self, sentence: str) -> Dict:
-        # Using FinBERT (finance-optimized model)
-        api_url = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+        # If HF API already failed or token missing, use fallback immediately
+        if self.hf_api_failed:
+            return self._fallback_sentiment(sentence)
         
-        # Truncate sentence to 500 chars to avoid API limits
+        api_url = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
         truncated_sentence = sentence[:500]
         
         try:
-            response = requests.post(api_url, headers=self.headers, json={"inputs": truncated_sentence}, timeout=15)
+            response = requests.post(api_url, headers=self.headers, json={"inputs": truncated_sentence}, timeout=30)
             
             if response.status_code == 200:
                 result = response.json()
@@ -60,45 +81,91 @@ class HuggingFaceClient:
                     label = result[0]['label'].lower()
                     score = result[0]['score']
                     
-                    # Convert to sentiment_score (0-1 scale where 0.5 is neutral)
                     if label == 'positive':
                         sentiment_score = score
                     elif label == 'negative':
                         sentiment_score = 1 - score
-                    else:  # neutral
+                    else:
                         sentiment_score = 0.5
                     
                     return {
                         'sentence': sentence[:300],
                         'sentiment_label': label,
                         'sentiment_score': round(sentiment_score, 3),
-                        'confidence': round(score, 3)
+                        'confidence': round(score, 3),
+                        'source': 'finbert-api'
                     }
-            
-            # Fallback for API errors
-            return {
-                'sentence': sentence[:200],
-                'sentiment_label': 'neutral',
-                'sentiment_score': 0.5,
-                'confidence': 0.5
-            }
-            
+            elif response.status_code == 401:
+                print(f"HF API Error 401: Invalid or missing token. Falling back to rule-based sentiment.")
+                self.hf_api_failed = True
+                self.fallback_reason = "HF API returned 401 - invalid or missing token"
+                return self._fallback_sentiment(sentence)
+            elif response.status_code == 503:
+                print(f"HF API Error 503: Model loading or unavailable. Falling back to rule-based sentiment.")
+                self.hf_api_failed = True
+                self.fallback_reason = "HF API returned 503 - model unavailable or cold start"
+                return self._fallback_sentiment(sentence)
+            else:
+                print(f"HF API Error {response.status_code}: {response.text[:100]}")
+                return self._fallback_sentiment(sentence)
+                
         except requests.exceptions.Timeout:
-            print(f"Timeout analyzing sentence, using neutral")
-            return {
-                'sentence': sentence[:200],
-                'sentiment_label': 'neutral',
-                'sentiment_score': 0.5,
-                'confidence': 0.5
-            }
+            print(f"Timeout analyzing sentence. Falling back to rule-based sentiment.")
+            return self._fallback_sentiment(sentence)
         except Exception as e:
             print(f"Sentiment API error: {str(e)}")
-            return {
-                'sentence': sentence[:200],
-                'sentiment_label': 'neutral',
-                'sentiment_score': 0.5,
-                'confidence': 0.5
-            }
+            return self._fallback_sentiment(sentence)
+    
+    def _fallback_sentiment(self, sentence: str) -> Dict:
+        """Rule-based fallback for when HF API is unavailable."""
+        sentence_lower = sentence.lower()
+        
+        # Positive financial keywords
+        positive_words = [
+            'growth', 'grew', 'increase', 'increased', 'rising', 'up', 'higher',
+            'record', 'strong', 'confidence', 'confident', 'optimistic', 'beat',
+            'exceed', 'outperform', 'raise', 'raised', 'guidance', 'momentum',
+            'accelerate', 'accelerated', 'expansion', 'expand', 'profit', 'profitable',
+            'outlook', 'improve', 'improved', 'improvement', 'better', 'best'
+        ]
+        
+        # Negative financial keywords
+        negative_words = [
+            'decline', 'declined', 'decrease', 'decreased', 'fall', 'fell', 'down', 'lower',
+            'weak', 'weakness', 'challenge', 'headwind', 'pressure', 'stress', 'risk',
+            'miss', 'missed', 'below', 'reduce', 'reduced', 'cut', 'slash', 'drop', 'dropped',
+            'collapsed', 'collapse', 'loss', 'lose', 'uncertain', 'uncertainty',
+            'deteriorate', 'deterioration', 'worse', 'worsening', 'problem'
+        ]
+        
+        pos_score = sum(1 for word in positive_words if word in sentence_lower)
+        neg_score = sum(1 for word in negative_words if word in sentence_lower)
+        
+        if pos_score > neg_score:
+            sentiment_score = min(0.6 + (pos_score * 0.05), 0.95)
+            label = 'positive'
+        elif neg_score > pos_score:
+            sentiment_score = max(0.4 - (neg_score * 0.05), 0.05)
+            label = 'negative'
+        else:
+            sentiment_score = 0.5
+            label = 'neutral'
+        
+        # Boost confidence for clear signals
+        if abs(pos_score - neg_score) >= 2:
+            confidence = 0.8
+        elif abs(pos_score - neg_score) >= 1:
+            confidence = 0.7
+        else:
+            confidence = 0.5
+        
+        return {
+            'sentence': sentence[:300],
+            'sentiment_label': label,
+            'sentiment_score': round(sentiment_score, 3),
+            'confidence': round(confidence, 3),
+            'source': 'rule-based-fallback'
+        }
     
     def compare_with_evidence(self, current_text: str, previous_text: str) -> Dict:
         current = self.analyze_sentiment_with_evidence(current_text)
@@ -108,11 +175,7 @@ class HuggingFaceClient:
         direction = 'more confident' if delta > 0.05 else ('less confident' if delta < -0.05 else 'unchanged')
         materiality = 'high' if abs(delta) > 0.15 else ('moderate' if abs(delta) > 0.08 else 'low')
         
-        # Extract key financial sentences for better evidence
-        current_key_sentences = self._extract_key_sentences(current.get('evidence', []))
-        previous_key_sentences = self._extract_key_sentences(previous.get('evidence', []))
-        
-        return {
+        result = {
             'overall_delta': {
                 'current': current['sentiment_score'],
                 'previous': previous['sentiment_score'],
@@ -120,34 +183,21 @@ class HuggingFaceClient:
                 'direction': direction,
                 'materiality': materiality
             },
-            'current_evidence': current_key_sentences[:10],
-            'previous_evidence': previous_key_sentences[:10],
+            'current_evidence': current.get('evidence', [])[:10],
+            'previous_evidence': previous.get('evidence', [])[:10],
             'total_sentences_analyzed': {
-                'current': current['sentence_count'],
-                'previous': previous['sentence_count']
+                'current': current.get('sentence_count', 0),
+                'previous': previous.get('sentence_count', 0)
             }
         }
-    
-    def _extract_key_sentences(self, evidence_list: List[Dict]) -> List[Dict]:
-        """Extract sentences that are likely to contain financial guidance or metrics."""
-        if not evidence_list:
-            return []
         
-        # Keywords that indicate important financial information
-        key_terms = [
-            'guidance', 'outlook', 'expect', 'forecast', 'revenue', 'margin', 
-            'growth', 'quarter', 'year', 'demand', 'market', 'segment',
-            'gross margin', 'operating margin', 'eps', 'earnings', 'sales',
-            'capital', 'investment', 'ramp', 'production', 'supply', 'demand'
-        ]
+        # Add warning if either analysis used fallback
+        warnings = []
+        if current.get('warning'):
+            warnings.append(f"Current quarter: {current['warning']}")
+        if previous.get('warning'):
+            warnings.append(f"Previous quarter: {previous['warning']}")
+        if warnings:
+            result['warnings'] = warnings
         
-        # Score each sentence by relevance
-        scored_sentences = []
-        for evidence in evidence_list:
-            sentence = evidence.get('sentence', '').lower()
-            score = sum(1 for term in key_terms if term in sentence)
-            scored_sentences.append((score, evidence))
-        
-        # Sort by relevance (highest first) and return
-        scored_sentences.sort(key=lambda x: x[0], reverse=True)
-        return [evidence for score, evidence in scored_sentences if score > 0]
+        return result
