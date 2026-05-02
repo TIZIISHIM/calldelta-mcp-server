@@ -153,22 +153,34 @@ class HuggingFaceClient:
             print(f"Replicate API error: {str(e)}")
         return None
     
-    def _call_gradio_api(self, sentence: str) -> Dict:
-        try:
-            response = requests.post(
-                f"{self.gradio_space_url}/gradio_api/call/sentiment_analysis",
-                json={"data": [sentence[:500]]},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result and 'data' in result:
-                    import json as json_lib
-                    sentiment_data = json_lib.loads(result['data'][0])
+def _call_gradio_api(self, sentence: str) -> Dict:
+    try:
+        # Try the correct Gradio API endpoint format
+        api_url = f"{self.gradio_space_url}/api/predict/sentiment_analysis"
+        
+        response = requests.post(
+            api_url,
+            json={"data": [sentence[:500]]},
+            timeout=30,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result and 'data' in result:
+                result_data = result['data']
+                if result_data and len(result_data) > 0:
+                    # The result might be a JSON string or a direct value
+                    sentiment_str = result_data[0]
+                    try:
+                        sentiment_data = json.loads(sentiment_str)
+                    except:
+                        # If not JSON, it might be just the label
+                        sentiment_data = {"label": sentiment_str, "score": 0.8, "sentiment_score": 0.8}
+                    
                     label = sentiment_data.get('label', 'neutral').lower()
                     score = sentiment_data.get('score', 0.5)
-                    sentiment_score = sentiment_data.get('sentiment_score', 0.5)
+                    sentiment_score = sentiment_data.get('sentiment_score', score)
                     return {
                         'sentence': sentence[:300],
                         'sentiment_label': label,
@@ -176,9 +188,44 @@ class HuggingFaceClient:
                         'confidence': round(score, 3),
                         'source': 'gradio-space'
                     }
-        except Exception as e:
-            print(f"Gradio API error: {str(e)}")
-        return None
+    except Exception as e:
+        print(f"Gradio API error: {str(e)}")
+    
+    # Try alternative endpoint format
+    try:
+        api_url = f"{self.gradio_space_url}/gradio_api/predict/sentiment_analysis"
+        response = requests.post(
+            api_url,
+            json={"data": [sentence[:500]]},
+            timeout=30,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result and 'data' in result:
+                result_data = result['data']
+                if result_data and len(result_data) > 0:
+                    sentiment_str = result_data[0]
+                    try:
+                        sentiment_data = json.loads(sentiment_str)
+                    except:
+                        sentiment_data = {"label": sentiment_str, "score": 0.8, "sentiment_score": 0.8}
+                    
+                    label = sentiment_data.get('label', 'neutral').lower()
+                    score = sentiment_data.get('score', 0.5)
+                    sentiment_score = sentiment_data.get('sentiment_score', score)
+                    return {
+                        'sentence': sentence[:300],
+                        'sentiment_label': label,
+                        'sentiment_score': round(sentiment_score, 3),
+                        'confidence': round(score, 3),
+                        'source': 'gradio-space'
+                    }
+    except Exception as e:
+        print(f"Gradio API alternative error: {str(e)}")
+    
+    return None
     
     def _fallback_sentiment(self, sentence: str) -> Dict:
         """Rule-based fallback for when all APIs fail."""
