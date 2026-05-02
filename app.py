@@ -199,7 +199,15 @@ async def debug_gradio_status():
             "error": str(e)
         }
 
-
+@app.get("/debug/replicate_status")
+async def debug_replicate_status():
+    replicate_token = os.environ.get("REPLICATE_API_TOKEN", "")
+    return {
+        "replicate_token_set": bool(replicate_token),
+        "replicate_token_preview": replicate_token[:10] + "..." if replicate_token else "not set",
+        "hf_token_set": bool(os.environ.get("HF_TOKEN", "")),
+        "gradio_url_set": bool(os.environ.get("GRADIO_SPACE_URL", ""))
+    }
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     session_id = os.urandom(16).hex()
